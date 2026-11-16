@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gradient</title>
+<meta name="description" content="Make gradients, pull them out of images, and export them as CSS, SVG, PNG, JPG or JSON.">
+<meta property="og:title" content="Gradient">
+<meta property="og:description" content="Make gradients, pull them out of images, and export them.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%23ffc56b'/%3E%3Cstop offset='.5' stop-color='%23f2617a'/%3E%3Cstop offset='1' stop-color='%235b3fd6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='8' fill='url(%23g)'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="top">
+  <h1 class="wordmark">Gradient</h1>
+  <div class="top-actions">
+    <button type="button" class="btn ghost" id="undo" title="Undo (Ctrl+Z)">Undo</button>
+    <button type="button" class="btn ghost" id="random">Random</button>
+    <button type="button" class="btn ghost" id="reverse">Reverse</button>
+    <button type="button" class="btn" id="share">Copy link</button>
+  </div>
+</header>
+
+<main class="layout">
+
+  <section class="stage" aria-label="Gradient preview">
+    <div id="preview" class="preview"></div>
+    <div class="track-wrap">
+      <div id="track" class="track"><div id="handles"></div></div>
+    </div>
+    <p class="hint" id="hint"></p>
+  </section>
+
+  <aside class="panel">
+
+    <section class="card">
+      <h2>Gradient</h2>
+      <div class="row">
+        <span class="label">Type</span>
+        <div class="seg" id="type">
+          <label><input type="radio" name="type" value="linear"><span>Linear</span></label>
+          <label><input type="radio" name="type" value="radial"><span>Radial</span></label>
+          <label><input type="radio" name="type" value="conic"><span>Conic</span></label>
+        </div>
+      </div>
+      <div class="row" id="angle-row">
+        <label class="label" for="angle" id="angle-label">Angle</label>
+        <input type="range" id="angle" min="0" max="360" step="1">
+        <span class="num"><input type="number" id="angle-num" min="0" max="360" step="1" aria-label="Angle in degrees"><i>°</i></span>
+      </div>
+      <div id="center-rows">
+        <div class="row">
+          <label class="label" for="cx">Center X</label>
+          <input type="range" id="cx" min="0" max="100" step="1">
+          <span class="num"><output id="cx-out"></output><i>%</i></span>
+        </div>
+        <div class="row">
+          <label class="label" for="cy">Center Y</label>
+          <input type="range" id="cy" min="0" max="100" step="1">
+          <span class="num"><output id="cy-out"></output><i>%</i></span>
+        </div>
+      </div>
+      <div class="row">
+        <span class="label">Blend</span>
+        <div class="seg" id="space">
+          <label><input type="radio" name="space" value="oklab"><span>Smooth</span></label>
+          <label><input type="radio" name="space" value="srgb"><span>Classic</span></label>
+        </div>
+      </div>
+      <p class="note">Smooth blends in OKLab, which avoids the grey, muddy middle you get between some colors. Classic is plain sRGB.</p>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>Stops</h2>
+        <button type="button" class="btn ghost small" id="add-stop">Add stop</button>
+      </div>
+      <div id="stops" class="stops"></div>
+    </section>
+
+    <section class="card" id="image-card">
+      <h2>From image</h2>
+      <label class="drop" id="drop">
+        <input type="file" id="file" accept="image/*" hidden>
+        <strong>Drop an image here</strong>
+        <span>or click to browse, or paste one from the clipboard</span>
+      </label>
+      <div id="image-ui" hidden>
+        <div class="img-center">
+          <div class="img-wrap" id="img-wrap">
+            <img id="img" alt="Source image">
+            <svg id="img-line" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+              <line id="line-shadow" vector-effect="non-scaling-stroke"/>
+              <line id="line-main" vector-effect="non-scaling-stroke"/>
+            </svg>
+            <div class="img-handle" id="pt-a" tabindex="0" role="button" aria-label="Line start. Use arrow keys to move."></div>
+            <div class="img-handle" id="pt-b" tabindex="0" role="button" aria-label="Line end. Use arrow keys to move."></div>
+          </div>
+        </div>
+        <div class="row">
+          <span class="label">Method</span>
+          <div class="seg" id="img-mode">
+            <label><input type="radio" name="img-mode" value="line" checked><span>Along a line</span></label>
+            <label><input type="radio" name="img-mode" value="palette"><span>Main colors</span></label>
+          </div>
+        </div>
+        <div class="row">
+          <label class="label" for="img-count">Stops</label>
+          <input type="range" id="img-count" min="2" max="8" step="1" value="5">
+          <span class="num"><output id="img-count-out">5</output></span>
+        </div>
+        <div class="row end">
+          <button type="button" class="btn ghost small" id="img-replace">Replace image</button>
+          <button type="button" class="btn ghost small" id="img-remove">Remove</button>
+        </div>
+      </div>
+      <p class="note">Images are read in your browser and never uploaded.</p>
+    </section>
+
+    <section class="card">
+      <h2>Export</h2>
+      <div class="row between">
+        <div class="seg" id="fmt">
+          <label><input type="radio" name="fmt" value="css" checked><span>CSS</span></label>
+          <label><input type="radio" name="fmt" value="svg"><span>SVG</span></label>
+          <label><input type="radio" name="fmt" value="json"><span>JSON</span></label>
+        </div>
+        <button type="button" class="btn small" id="copy-code">Copy</button>
+      </div>
+      <pre id="code" class="code" tabindex="0"></pre>
+
+      <h3>Download</h3>
+      <div class="row">
+        <label class="label" for="size">Size</label>
+        <select id="size">
+          <option value="1920x1080">1920 × 1080</option>
+          <option value="1080x1080">1080 × 1080</option>
+          <option value="1080x1920">1080 × 1920</option>
+          <option value="3840x2160">3840 × 2160</option>
+          <option value="1024x64">1024 × 64 (ramp strip)</option>
+          <option value="custom">Custom</option>
+        </select>
+      </div>
+      <div class="row">
+        <span class="label">Pixels</span>
+        <span class="num wide"><input type="number" id="w" min="1" max="8192" value="1920" aria-label="Width in pixels"></span>
+        <span class="times">×</span>
+        <span class="num wide"><input type="number" id="h" min="1" max="8192" value="1080" aria-label="Height in pixels"></span>
+      </div>
+      <div class="row dl">
+        <button type="button" class="btn" data-dl="png">PNG</button>
+        <button type="button" class="btn" data-dl="jpg">JPG</button>
+        <button type="button" class="btn" data-dl="svg" id="dl-svg">SVG</button>
+      </div>
+    </section>
+
+  </aside>
+</main>
+
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
