@@ -8,6 +8,12 @@
 <meta property="og:title" content="Gradient">
 <meta property="og:description" content="Make gradients, grow them with reaction-diffusion, pull them out of images, and export them.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%23ffc56b'/%3E%3Cstop offset='.5' stop-color='%23f2617a'/%3E%3Cstop offset='1' stop-color='%235b3fd6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='8' fill='url(%23g)'/%3E%3C/svg%3E">
+<script>
+  try {
+    var t = localStorage.getItem('gradient-theme');
+    if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+  } catch (e) {}
+</script>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -17,12 +23,17 @@
 <main class="layout">
 
   <header class="brand">
-    <h1 class="wordmark">Gradient</h1>
-    <div class="top-actions">
-      <button type="button" class="btn ghost small" id="undo" title="Undo (Ctrl+Z)">Undo</button>
-      <button type="button" class="btn ghost small" id="random">Random</button>
-      <button type="button" class="btn ghost small" id="reverse">Reverse</button>
-      <button type="button" class="btn small" id="share">Copy link</button>
+    <div class="logo">
+      <span class="logo-chip" aria-hidden="true"></span>
+      <h1 class="wordmark">Gradient</h1>
+    </div>
+    <div class="brand-actions">
+      <button type="button" class="tool tip-down" id="theme" aria-label="Switch between light and dark" data-tip="Light / dark">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18Z" fill="currentColor"/></svg>
+      </button>
+      <button type="button" class="tool tip-down tip-end" id="keys-open" aria-label="Keyboard shortcuts" data-tip="Shortcuts  ?">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="6" width="19" height="12" rx="3"/><path d="M6.5 10h.01M10 10h.01M13.5 10h.01M17 10h.01M8 14h8"/></svg>
+      </button>
     </div>
   </header>
 
@@ -31,6 +42,7 @@
       <div id="preview" class="preview">
         <canvas id="canvas" hidden></canvas>
         <canvas id="gl" hidden></canvas>
+        <div id="grain" class="grain" hidden></div>
         <div id="overlay" class="overlay" hidden>
           <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
             <path id="curve-shadow" vector-effect="non-scaling-stroke"/>
@@ -38,27 +50,55 @@
           </svg>
           <div id="hot-handles"></div>
         </div>
+        <div class="hud" id="hud" aria-hidden="true"></div>
+        <div class="canvas-tools">
+          <button type="button" class="canvas-btn" id="canvas-play" aria-label="Play or pause the reaction" title="Play / pause (Space)" hidden>
+            <svg class="ico i-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6v12M15 6v12"/></svg>
+            <svg class="ico i-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l10.5-6.5Z"/></svg>
+          </button>
+          <button type="button" class="canvas-btn" id="zen" aria-label="Focus mode: hide or show the controls" title="Focus mode (F)">
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3h6v6M21 3l-7 7M3 21l7-7M9 21H3v-6"/></svg>
+          </button>
+        </div>
       </div>
     </div>
-    <div class="track-wrap">
-      <div id="track" class="track"><div id="handles"></div></div>
+    <div class="dock">
+      <div class="track-wrap">
+        <div id="track" class="track"><div id="handles"></div></div>
+      </div>
+      <div class="dock-row">
+        <p class="hint" id="hint"></p>
+        <div class="toolbar" role="toolbar" aria-label="Gradient actions">
+          <button type="button" class="tool" id="undo" aria-label="Undo" data-tip="Undo  Ctrl Z">
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>
+          </button>
+          <button type="button" class="tool" id="redo" aria-label="Redo" data-tip="Redo  Ctrl Shift Z">
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.500a5.500 5.500 0 0 0 0 11H13"/></svg>
+          </button>
+          <span class="sep" aria-hidden="true"></span>
+          <button type="button" class="tool" id="random" aria-label="Random colors" data-tip="Random  R">
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 18h1.400c1.300 0 2.500-.600 3.300-1.700l6.100-8.600c.700-1.100 2-1.700 3.300-1.700H22"/><path d="m18 2 4 4-4 4"/><path d="M2 6h1.900c1.500 0 2.900.900 3.600 2.200"/><path d="M22 18h-5.900c-1.300 0-2.600-.700-3.300-1.800l-.5-.800"/><path d="m18 14 4 4-4 4"/></svg>
+          </button>
+          <button type="button" class="tool" id="reverse" aria-label="Reverse the stops" data-tip="Reverse  X">
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/></svg>
+          </button>
+          <span class="sep" aria-hidden="true"></span>
+          <button type="button" class="btn small" id="share">Copy link</button>
+        </div>
+      </div>
     </div>
-    <p class="hint" id="hint"></p>
   </section>
 
   <aside class="panel" id="panel" tabindex="-1">
 
     <section class="card">
       <h2>Gradient</h2>
-      <div class="row top">
-        <span class="label">Type</span>
-        <div class="seg wrap" id="type">
-          <label><input type="radio" name="type" value="linear"><span>Linear</span></label>
-          <label><input type="radio" name="type" value="radial"><span>Radial</span></label>
-          <label><input type="radio" name="type" value="conic"><span>Conic</span></label>
-          <label><input type="radio" name="type" value="shape"><span>Hotspots</span></label>
-          <label><input type="radio" name="type" value="rd"><span>Reaction</span></label>
-        </div>
+      <div class="types" id="type" role="radiogroup" aria-label="Gradient type">
+        <label class="type"><input type="radio" name="type" value="linear"><span class="type-tile"><i class="ti ti-linear"></i>Linear</span></label>
+        <label class="type"><input type="radio" name="type" value="radial"><span class="type-tile"><i class="ti ti-radial"></i>Radial</span></label>
+        <label class="type"><input type="radio" name="type" value="conic"><span class="type-tile"><i class="ti ti-conic"></i>Conic</span></label>
+        <label class="type"><input type="radio" name="type" value="shape"><span class="type-tile"><i class="ti ti-shape"></i>Hotspots</span></label>
+        <label class="type"><input type="radio" name="type" value="rd"><span class="type-tile"><i class="ti ti-rd"><svg viewBox="0 0 40 30" preserveAspectRatio="none" aria-hidden="true"><path d="M-2 6c8 0 8 6 16 6s8-6 14-6 6 5 14 5M-2 19c6 0 8 6 14 6s6-9 14-9 8 7 16 7M5 32c0-5 7-5 7 0M25-2c0 5 8 5 8 0"/></svg></i>Reaction</span></label>
       </div>
       <div class="row" id="angle-row">
         <label class="label" for="angle" id="angle-label">Angle</label>
@@ -76,6 +116,11 @@
           <input type="range" id="cy" min="0" max="100" step="1">
           <span class="num"><output id="cy-out"></output><i>%</i></span>
         </div>
+      </div>
+      <div class="row">
+        <label class="label" for="grain-range">Grain</label>
+        <input type="range" id="grain-range" min="0" max="100" step="1">
+        <span class="num"><output id="grain-out"></output><i>%</i></span>
       </div>
       <div class="row">
         <span class="label">Blend</span>
@@ -162,6 +207,8 @@
         <button type="button" class="btn ghost small" id="add-stop">Add stop</button>
       </div>
       <div id="stops" class="stops"></div>
+      <h3>Presets</h3>
+      <div id="presets" class="presets"></div>
     </section>
 
     <section class="card" id="image-card">
@@ -244,6 +291,25 @@
 
   </aside>
 </main>
+
+<dialog id="keys" class="keys" aria-labelledby="keys-title">
+  <div class="card-head">
+    <h2 id="keys-title">Keyboard shortcuts</h2>
+    <form method="dialog"><button class="btn ghost small">Close</button></form>
+  </div>
+  <dl>
+    <dt>Random colors</dt><dd><kbd>R</kbd></dd>
+    <dt>Reverse the stops</dt><dd><kbd>X</kbd></dd>
+    <dt>Gradient type</dt><dd><kbd>1</kbd> to <kbd>5</kbd></dd>
+    <dt>Focus mode</dt><dd><kbd>F</kbd></dd>
+    <dt>Play or pause the reaction</dt><dd><kbd>Space</kbd></dd>
+    <dt>Copy the code</dt><dd><kbd>C</kbd></dd>
+    <dt>Undo, redo</dt><dd><kbd>Ctrl</kbd> <kbd>Z</kbd>, <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>Z</kbd></dd>
+    <dt>Nudge the selected handle</dt><dd><kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd></dd>
+    <dt>Remove the selected handle</dt><dd><kbd>Delete</kbd></dd>
+    <dt>Snap the angle to 15° while dragging</dt><dd><kbd>Shift</kbd></dd>
+  </dl>
+</dialog>
 
 <div id="toast" class="toast" role="status" aria-live="polite"></div>
 

@@ -83,6 +83,7 @@
     selected: null,
     hot: { mode: 'points', pts: defaultHotspots(), spread: 60, soft: 45 },
     rd: { f: 0.0545, k: 0.062, speed: 10, detail: 320 },
+    grain: 0,
   };
   state.selected = state.stops[0].id;
   const isField = () => FIELD_TYPES.includes(state.type);
@@ -148,12 +149,15 @@
       ].join('\n');
     }
     const plain = sorted();
-    if (state.space === 'srgb') return `background: ${cssGradient(plain)};`;
-    return [
-      '/* fallback for older browsers */',
-      `background: ${cssGradient(plain)};`,
-      `background: ${cssGradient(plain, 'oklab')};`,
-    ].join('\n');
+    const lines = state.space === 'srgb'
+      ? [`background: ${cssGradient(plain)};`]
+      : [
+        '/* fallback for older browsers */',
+        `background: ${cssGradient(plain)};`,
+        `background: ${cssGradient(plain, 'oklab')};`,
+      ];
+    if (state.grain) lines.push('/* Grain is not part of the CSS. It is baked into PNG and JPG downloads. */');
+    return lines.join('\n');
   }
 
   /** Geometry shared by canvas and SVG, in pixels. */
@@ -201,6 +205,7 @@
     if (state.type === 'radial' || state.type === 'conic') out.center = { x: state.cx, y: state.cy };
     out.interpolation = state.space;
     out.stops = sorted().map((s) => ({ color: s.color, position: s.pos }));
+    if (state.grain) out.grain = state.grain;
     if (isField()) {
       out.hotspots = {
         shape: state.hot.mode,
@@ -218,7 +223,42 @@
     return JSON.stringify(out, null, 2);
   }
 
+  /* Grain: one fixed tile of grey noise, laid over the gradient with the
+     "overlay" blend. The same tile is used on screen and in downloads. */
+  let grainTile = null;
+  function grainCanvas() {
+    if (grainTile) return grainTile;
+    const c = document.createElement('canvas');
+    c.width = c.height = 256;
+    const ctx = c.getContext('2d');
+    const im = ctx.createImageData(256, 256);
+    let s = 0x9e3779b9;
+    for (let i = 0; i < im.data.length; i += 4) {
+      s = (s + 0x6d2b79f5) | 0;
+      let t = Math.imul(s ^ (s >>> 15), 1 | s);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      const v = ((t ^ (t >>> 14)) >>> 0) & 255;
+      im.data[i] = im.data[i + 1] = im.data[i + 2] = v;
+      im.data[i + 3] = 255;
+    }
+    ctx.putImageData(im, 0, 0);
+    return (grainTile = c);
+  }
+  const grainAlpha = () => (state.grain / 100) * 0.55;
+
   function paint(canvas, w, h) {
+    paintBase(canvas, w, h);
+    if (!state.grain) return;
+    const ctx = canvas.getContext('2d');
+    ctx.save();
+    ctx.globalAlpha = grainAlpha();
+    ctx.globalCompositeOperation = 'overlay';
+    ctx.fillStyle = ctx.createPattern(grainCanvas(), 'repeat');
+    ctx.fillRect(0, 0, w, h);
+    ctx.restore();
+  }
+
+  function paintBase(canvas, w, h) {
     if (isField()) {
       const lutNow = buildLut();
       if (state.type === 'shape') {
@@ -260,8 +300,24 @@
     spread: $('#spread'), soft: $('#soft'), spreadOut: $('#spread-out'), softOut: $('#soft-out'),
     rdPreset: $('#rd-preset'), rdF: $('#rd-f'), rdK: $('#rd-k'), rdSpeed: $('#rd-speed'), rdDetail: $('#rd-detail'),
     rdFOut: $('#rd-f-out'), rdKOut: $('#rd-k-out'), rdSpeedOut: $('#rd-speed-out'), rdDetailOut: $('#rd-detail-out'),
-    rdPlay: $('#rd-play'),
+    rdPlay: $('#rd-play'), canvasPlay: $('#canvas-play'),
+    grain: $('#grain-range'), grainOut: $('#grain-out'), grainLayer: $('#grain'), hud: $('#hud'),
+    undo: $('#undo'), redo: $('#redo'),
   };
+  const root = document.documentElement;
+
+  let hudTimer;
+  function hud(text) {
+    els.hud.textContent = text;
+    els.hud.classList.add('is-on');
+    clearTimeout(hudTimer);
+    hudTimer = setTimeout(() => els.hud.classList.remove('is-on'), 900);
+  }
+
+  const fillRange = (el) =>
+    el.style.setProperty('--p', ((el.value - el.min) / (el.max - el.min)) * 100 + '%');
+  const fillRanges = () => document.querySelectorAll('input[type="range"]').forEach(fillRange);
+  document.addEventListener('input', (e) => { if (e.target.type === 'range') fillRange(e.target); });
 
   let toastTimer;
   function toast(msg) {
@@ -375,6 +431,10 @@
       (name) => RD_PRESETS[name][0] === state.rd.f && RD_PRESETS[name][1] === state.rd.k);
     els.rdPreset.value = preset || 'custom';
     els.rdPlay.textContent = rd.playing ? 'Pause' : 'Play';
+    els.canvasPlay.hidden = !isRd;
+    els.preview.classList.toggle('is-playing', rd.playing);
+    setValue(els.grain, state.grain);
+    els.grainOut.textContent = state.grain;
     setValue(els.angle, state.angle);
     setValue(els.angleNum, state.angle);
     setValue(els.cx, state.cx);
@@ -387,6 +447,9 @@
         : state.type === 'linear'
           ? 'Drag the canvas to turn the gradient.'
           : 'Drag the canvas to move the center.') + ' Click the bar to add a color stop.';
+    fillRanges();
+    els.undo.disabled = !history.length && serialize() === committed;
+    els.redo.disabled = !future.length;
   }
 
   function exportSize() {
@@ -415,6 +478,9 @@
     const res = resolved();
     renderPreview(res);
     els.track.style.background = `linear-gradient(90deg, ${stopList(res)})`;
+    root.style.setProperty('--stops', stopList(res));
+    root.style.setProperty('--c0', res[0].color);
+    root.style.setProperty('--c1', res[res.length - 1].color);
     renderHandles();
     renderList(opts && opts.forceOrder);
     renderControls();
@@ -435,6 +501,7 @@
       out += `&hm=${state.hot.mode}&p=${pts}&sp=${state.hot.spread}&so=${state.hot.soft}`;
     }
     if (state.type === 'rd') out += `&f=${state.rd.f}&k=${state.rd.k}&v=${state.rd.speed}&d=${state.rd.detail}`;
+    if (state.grain) out += `&g=${state.grain}`;
     return out;
   };
 
@@ -461,6 +528,7 @@
     state.cy = num('y', 0, 100, 50);
     state.stops = stops.slice(0, 32);
     state.selected = sorted()[0].id;
+    state.grain = Math.round(num('g', 0, 100, 0));
 
     if (p.has('p')) {
       const pts = p.get('p').split('_').map((pair) => {
@@ -482,6 +550,7 @@
   }
 
   const history = [];
+  const future = [];
   let committed = '';
   let commitTimer;
 
@@ -491,8 +560,26 @@
     if (now === committed) return;
     if (committed) history.push(committed);
     if (history.length > 100) history.shift();
+    future.length = 0;
     committed = now;
+    els.undo.disabled = false;
+    els.redo.disabled = true;
     try { window.history.replaceState(null, '', '#' + now); } catch (e) { /* file:// in some browsers */ }
+  }
+
+  function restore(target) {
+    committed = target;
+    deserialize(target);
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    render({ forceOrder: true });
+    try { window.history.replaceState(null, '', '#' + target); } catch (e) { /* ignore */ }
+  }
+
+  function redo() {
+    clearTimeout(commitTimer);
+    if (!future.length || serialize() !== committed) return toast('Nothing to redo');
+    history.push(committed);
+    restore(future.pop());
   }
 
   function scheduleCommit() {
@@ -503,14 +590,12 @@
   function undo() {
     clearTimeout(commitTimer);
     let target;
-    if (serialize() !== committed) target = committed;       // drop uncommitted edits
+    const now = serialize();
+    if (now !== committed) target = committed;       // drop uncommitted edits
     else if (history.length) target = history.pop();
     else return toast('Nothing to undo');
-    committed = target;
-    deserialize(target);
-    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
-    render({ forceOrder: true });
-    try { window.history.replaceState(null, '', '#' + target); } catch (e) { /* ignore */ }
+    future.push(now);
+    restore(target);
   }
 
   /* ------------------------------------------------------------------ *
@@ -666,7 +751,7 @@
   els.cy.addEventListener('input', () => { state.cy = +els.cy.value; render(); });
 
   els.preview.addEventListener('pointerdown', (e) => {
-    if (e.button) return;
+    if (e.button || e.target.closest('.canvas-btn')) return;
     e.preventDefault();
     if (isField()) return hotPointer(e);
     const apply = (ev) => {
@@ -682,6 +767,7 @@
         state.cx = clamp(Math.round(((ev.clientX - r.left) / r.width) * 100), 0, 100);
         state.cy = clamp(Math.round(((ev.clientY - r.top) / r.height) * 100), 0, 100);
       }
+      hud(state.type === 'linear' ? `${state.angle}°` : `${state.cx}% · ${state.cy}%`);
       render();
     };
     apply(e);
@@ -721,14 +807,80 @@
   });
 
   $('#undo').addEventListener('click', undo);
+  $('#redo').addEventListener('click', redo);
+
+  /* presets */
+  const PRESETS = [
+    ['Sunset', 'ffc56b', 'f2617a', '5b3fd6'], ['Peach', 'ffe3c2', 'ff9a8b', 'ff5f7e'],
+    ['Ember', 'fceabb', 'f8a100', 'd1451e', '4a1414'], ['Rose', 'fbd3e9', 'e96aa8', '7a1f5c'],
+    ['Candy', 'ff9a9e', 'fad0c4', 'a18cd1'], ['Plum', 'f6d5f7', 'b06ab3', '4568dc'],
+    ['Dusk', 'f7b267', 'c3507b', '2b1055'], ['Ice', 'f4f7ff', 'c9d6ff', '6b8cff'],
+    ['Ocean', 'a8edea', '3fa7d6', '1b3a8f'], ['Lagoon', '43e97b', '38d9d7', '2f6fed'],
+    ['Aurora', '7bf2c8', '1e7d92', '3b1f7a'], ['Mint', 'e3fc9c', '96e6a1', '2ba784'],
+    ['Forest', 'e9f5a1', '5fa55a', '0b3d2e'], ['Neon', 'f9f047', '0fd850', '0a6a5c'],
+    ['Sand', 'f5e6ca', 'd9b382', '8c5a3c'], ['Mono', 'f4f4f1', '8a8a86', '1a1a18'],
+  ];
+  const presetsEl = $('#presets');
+  for (const [name, ...cols] of PRESETS) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'preset';
+    b.title = name;
+    b.setAttribute('aria-label', `${name} preset`);
+    b.dataset.colors = cols.join(',');
+    b.style.background = `linear-gradient(135deg, ${cols.map((c) => '#' + c).join(', ')})`;
+    presetsEl.append(b);
+  }
+  presetsEl.addEventListener('click', (e) => {
+    const b = e.target.closest('.preset');
+    if (!b) return;
+    commit();
+    setStops(b.dataset.colors.split(',').map((c) => '#' + c));
+    render({ forceOrder: true });
+  });
+
+  /* focus mode, theme, shortcuts */
+  const keysDialog = $('#keys');
+  function toggleZen() {
+    const on = document.body.classList.toggle('is-zen');
+    if (on) toast('Focus mode. Press F or Esc to bring the controls back.');
+  }
+  $('#zen').addEventListener('click', toggleZen);
+  $('#keys-open').addEventListener('click', () => keysDialog.showModal());
+  keysDialog.addEventListener('click', (e) => { if (e.target === keysDialog) keysDialog.close(); });
+
+  $('#theme').addEventListener('click', () => {
+    const dark = root.dataset.theme
+      ? root.dataset.theme === 'dark'
+      : window.matchMedia('(prefers-color-scheme: dark)').matches;
+    root.dataset.theme = dark ? 'light' : 'dark';
+    try { localStorage.setItem('gradient-theme', root.dataset.theme); } catch (e) { /* private mode */ }
+  });
+
+  function togglePlay() { rd.playing = !rd.playing; render(); }
+  els.canvasPlay.addEventListener('click', togglePlay);
 
   document.addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z') {
-      const t = e.target;
-      if (t.matches && t.matches('input[type="text"], input[type="number"]')) return; // native undo
+    const t = e.target;
+    const typing = !!(t.matches && t.matches('input[type="text"], input[type="number"], select, textarea'));
+    const key = e.key.toLowerCase();
+    if (e.ctrlKey || e.metaKey) {
+      if (typing || (key !== 'z' && key !== 'y')) return; // text fields keep their own undo
       e.preventDefault();
-      undo();
+      if (key === 'y' || e.shiftKey) redo(); else undo();
+      return;
     }
+    if (e.altKey || typing || keysDialog.open) return;
+    if (key === 'escape' && document.body.classList.contains('is-zen')) return toggleZen();
+    if (key === ' ') {
+      if (state.type !== 'rd' || (t.matches && t.matches('button, input, label, [role="button"]'))) return;
+      e.preventDefault();
+      return togglePlay();
+    }
+    const type = TYPES[+key - 1];
+    if (type) { state.type = type; return render(); }
+    const action = { r: '#random', x: '#reverse', c: '#copy-code', f: '#zen', '?': '#keys-open' }[key];
+    if (action) { e.preventDefault(); $(action).click(); }
   });
 
   async function copy(text, msg) {
@@ -791,6 +943,7 @@
 
   let fitTimer;
   new ResizeObserver(() => {
+    sizeGrain();
     if (els.size.value !== 'fit') return;
     clearTimeout(fitTimer);
     fitTimer = setTimeout(() => {
@@ -1497,10 +1650,26 @@ void main() {
 
   const shapeCache = { key: '', field: null, fw: 0, fh: 0 };
 
+  /** Scale the grain so a tile covers the same share of the picture as in the download. */
+  function sizeGrain() {
+    if (!state.grain) return;
+    const pw = els.preview.clientWidth;
+    const size = pw ? (256 * pw) / exportSize().w : 256;
+    els.grainLayer.style.backgroundSize = `${size.toFixed(2)}px`;
+  }
+
   function renderPreview(res) {
     const field = isField();
     const { w, h } = exportSize();
     els.preview.style.setProperty('--ar', (w / h).toFixed(5));
+    els.grainLayer.hidden = !state.grain;
+    if (state.grain) {
+      if (!els.grainLayer.style.backgroundImage) {
+        els.grainLayer.style.backgroundImage = `url(${grainCanvas().toDataURL()})`;
+      }
+      els.grainLayer.style.opacity = grainAlpha();
+      sizeGrain();
+    }
     els.overlay.hidden = !field;
     if (!field) els.canvas.hidden = els.gl.hidden = true;
     if (!field) {
@@ -1630,7 +1799,8 @@ void main() {
   els.rdK.addEventListener('input', () => { state.rd.k = +els.rdK.value; render(); });
   els.rdSpeed.addEventListener('input', () => { state.rd.speed = +els.rdSpeed.value; render(); });
   els.rdDetail.addEventListener('input', () => { state.rd.detail = +els.rdDetail.value; render(); });
-  els.rdPlay.addEventListener('click', () => { rd.playing = !rd.playing; render(); });
+  els.rdPlay.addEventListener('click', togglePlay);
+  els.grain.addEventListener('input', () => { state.grain = +els.grain.value; render(); });
   $('#rd-restart').addEventListener('click', () => { rdInit(); render(); });
 
   /* ------------------------------------------------------------------ *
@@ -1647,4 +1817,5 @@ void main() {
   placeLine();
   render({ forceOrder: true });
   committed = serialize();
+  els.undo.disabled = true;
 })();
