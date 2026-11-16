@@ -71,6 +71,13 @@
   const TYPES = ['linear', 'radial', 'conic', 'shape', 'rd'];
   const FIELD_TYPES = ['shape', 'rd']; // drawn on a canvas from a field of values, not by CSS
   const SPACES = ['oklab', 'srgb'];
+  const defaultFx = () => ({
+    lut: '', lutMix: 100, blur: 'none', blurAmt: 35, blurAngle: 0,
+    half: 'none', halfSize: 10, halfAngle: 30, print: 0,
+  });
+  const defaultText = () => ({
+    str: '', font: 'sans', size: 12, spacing: 0, color: '#fafaf7', blend: 'normal', x: 50, y: 50, under: false,
+  });
   const defaultHotspots = () => [{ x: 0.25, y: 0.62 }, { x: 0.5, y: 0.36 }, { x: 0.75, y: 0.62 }];
 
   const state = {
@@ -84,6 +91,9 @@
     hot: { mode: 'points', pts: defaultHotspots(), spread: 60, soft: 45 },
     rd: { f: 0.0545, k: 0.062, speed: 10, detail: 320 },
     grain: 0,
+    steps: 0, // 0 is a smooth blend; 2 and up cuts the gradient into that many flat bands
+    fx: defaultFx(),
+    text: defaultText(),
   };
   state.selected = state.stops[0].id;
   const isField = () => FIELD_TYPES.includes(state.type);
@@ -93,8 +103,24 @@
 
   /** Stops as plain sRGB. In "smooth" mode, extra stops are inserted so the
    *  OKLab blend looks the same in CSS, canvas and SVG. */
-  function resolved() {
+  function resolved(raw) {
+    const g = raw ? null : grade();
+    const tone = (hex) => (g ? rgbToHex(g(hexToRgb(hex))) : hex);
+    if (state.steps > 1) {
+      const n = state.steps, out = [];
+      for (let i = 0; i < n; i++) {
+        const color = tone(colorAt((i / (n - 1)) * 100));
+        out.push({ color, pos: (i / n) * 100 }, { color, pos: ((i + 1) / n) * 100 });
+      }
+      return out;
+    }
     const s = sorted();
+    if (g) {
+      // a grade can bend the colors between two stops, so sample the gradient densely
+      const at = new Set(s.map((st) => st.pos));
+      for (let i = 0; i <= 40; i++) at.add(i * 2.5);
+      return [...at].sort((p, q) => p - q).map((pos) => ({ color: tone(colorAt(pos)), pos }));
+    }
     if (state.space === 'srgb') return s.map(({ color, pos }) => ({ color, pos }));
     const out = [];
     for (let i = 0; i < s.length; i++) {
@@ -148,15 +174,18 @@
         'background: url("gradient.png") center / cover;',
       ].join('\n');
     }
-    const plain = sorted();
-    const lines = state.space === 'srgb'
+    const stepped = state.steps > 1 || !!grade();
+    const plain = stepped ? resolved() : sorted();
+    const lines = state.space === 'srgb' || stepped
       ? [`background: ${cssGradient(plain)};`]
       : [
         '/* fallback for older browsers */',
         `background: ${cssGradient(plain)};`,
         `background: ${cssGradient(plain, 'oklab')};`,
       ];
-    if (state.grain) lines.push('/* Grain is not part of the CSS. It is baked into PNG and JPG downloads. */');
+    if (state.grain || fxActive()) {
+      lines.push('/* Blur, halftone, print texture, grain and type are not part of the CSS.', '   They are in PNG and JPG downloads. */');
+    }
     return lines.join('\n');
   }
 
@@ -182,6 +211,8 @@
     }
     const g = geometry(w, h);
     const n = (v) => String(+v.toFixed(2));
+    const note = state.grain || fxActive()
+      ? ['<!-- Blur, halftone, print texture, grain and type are only in PNG and JPG downloads. -->'] : [];
     const stops = resolved()
       .map((s) => `      <stop offset="${fmt(s.pos)}%" stop-color="${s.color}"/>`)
       .join('\n');
@@ -190,6 +221,7 @@
         ? `<linearGradient id="g" gradientUnits="userSpaceOnUse" x1="${n(g.x1)}" y1="${n(g.y1)}" x2="${n(g.x2)}" y2="${n(g.y2)}">\n${stops}\n    </linearGradient>`
         : `<radialGradient id="g" gradientUnits="userSpaceOnUse" cx="${n(g.cx)}" cy="${n(g.cy)}" r="${n(g.r)}">\n${stops}\n    </radialGradient>`;
     return [
+      ...note,
       `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">`,
       '  <defs>',
       `    ${def}`,
@@ -206,6 +238,17 @@
     out.interpolation = state.space;
     out.stops = sorted().map((s) => ({ color: s.color, position: s.pos }));
     if (state.grain) out.grain = state.grain;
+    if (state.steps > 1) out.steps = state.steps;
+    const f = state.fx, fxOut = {};
+    if (f.lut && f.lutMix) fxOut.grade = { look: f.lut.replace(/^u:/, ''), strength: f.lutMix };
+    if (f.blur !== 'none') fxOut.blur = { kind: f.blur, amount: f.blurAmt };
+    if (f.half !== 'none') fxOut.halftone = { kind: f.half, size: f.halfSize, angle: f.halfAngle };
+    if (f.print) fxOut.printTexture = f.print;
+    if (Object.keys(fxOut).length) out.effects = fxOut;
+    if (hasText()) {
+      const t = state.text;
+      out.text = { content: t.str, font: t.font, size: t.size, color: t.color, blend: t.blend, x: t.x, y: t.y };
+    }
     if (isField()) {
       out.hotspots = {
         shape: state.hot.mode,
@@ -218,7 +261,9 @@
         out.reaction = { model: 'gray-scott', feed: state.rd.f, kill: state.rd.k, diffusionA: 1, diffusionB: 0.5 };
       }
     } else {
-      out.css = cssGradient(sorted(), state.space === 'oklab' ? 'oklab' : '');
+      out.css = state.steps > 1 || grade()
+        ? cssGradient(resolved())
+        : cssGradient(sorted(), state.space === 'oklab' ? 'oklab' : '');
     }
     return JSON.stringify(out, null, 2);
   }
@@ -248,6 +293,7 @@
 
   function paint(canvas, w, h) {
     paintBase(canvas, w, h);
+    finishFx(canvas);
     if (!state.grain) return;
     const ctx = canvas.getContext('2d');
     ctx.save();
@@ -303,6 +349,20 @@
     rdPlay: $('#rd-play'), canvasPlay: $('#canvas-play'),
     grain: $('#grain-range'), grainOut: $('#grain-out'), grainLayer: $('#grain'), hud: $('#hud'),
     undo: $('#undo'), redo: $('#redo'),
+    steps: $('#steps'), stepsOut: $('#steps-out'),
+    guide: $('#guide'), guideDots: $('#guide-dots'), guideLines: [$('#guide-shadow'), $('#guide-main')],
+    saved: $('#saved'), savedNote: $('#saved-note'),
+    fx: $('#fx'), lut: $('#lut'), lutMix: $('#lut-mix'), lutMixOut: $('#lut-mix-out'), lutMixRow: $('#lut-mix-row'),
+    lutFile: $('#lut-file'), lutRemove: $('#lut-remove'),
+    blur: $('#blur'), blurAmt: $('#blur-amt'), blurAmtOut: $('#blur-amt-out'), blurAmtRow: $('#blur-amt-row'),
+    blurAngle: $('#blur-angle'), blurAngleOut: $('#blur-angle-out'), blurAngleRow: $('#blur-angle-row'),
+    half: $('#half'), halfSize: $('#half-size'), halfSizeOut: $('#half-size-out'), halfSizeRow: $('#half-size-row'),
+    halfAngle: $('#half-angle'), halfAngleOut: $('#half-angle-out'), halfAngleRow: $('#half-angle-row'),
+    print: $('#print'), printOut: $('#print-out'),
+    text: $('#text'), textRows: $('#text-rows'), textFont: $('#text-font'),
+    textSize: $('#text-size'), textSizeOut: $('#text-size-out'),
+    textSpacing: $('#text-spacing'), textSpacingOut: $('#text-spacing-out'),
+    textColor: $('#text-color'), textBlend: $('#text-blend'), typeHandle: $('#type-handle'),
   };
   const root = document.documentElement;
 
@@ -435,6 +495,8 @@
     els.preview.classList.toggle('is-playing', rd.playing);
     setValue(els.grain, state.grain);
     els.grainOut.textContent = state.grain;
+    setValue(els.steps, state.steps > 1 ? state.steps : 1);
+    els.stepsOut.textContent = state.steps > 1 ? state.steps : 'Off';
     setValue(els.angle, state.angle);
     setValue(els.angleNum, state.angle);
     setValue(els.cx, state.cx);
@@ -447,6 +509,7 @@
         : state.type === 'linear'
           ? 'Drag the canvas to turn the gradient.'
           : 'Drag the canvas to move the center.') + ' Click the bar to add a color stop.';
+    renderFxControls();
     fillRanges();
     els.undo.disabled = !history.length && serialize() === committed;
     els.redo.disabled = !future.length;
@@ -477,11 +540,12 @@
   function render(opts) {
     const res = resolved();
     renderPreview(res);
-    els.track.style.background = `linear-gradient(90deg, ${stopList(res)})`;
+    els.track.style.background = `linear-gradient(90deg, ${stopList(resolved(true))})`;
     root.style.setProperty('--stops', stopList(res));
     root.style.setProperty('--c0', res[0].color);
     root.style.setProperty('--c1', res[res.length - 1].color);
     renderHandles();
+    renderGuide();
     renderList(opts && opts.forceOrder);
     renderControls();
     renderCode();
@@ -502,6 +566,16 @@
     }
     if (state.type === 'rd') out += `&f=${state.rd.f}&k=${state.rd.k}&v=${state.rd.speed}&d=${state.rd.detail}`;
     if (state.grain) out += `&g=${state.grain}`;
+    if (state.steps > 1) out += `&n=${state.steps}`;
+    const f = state.fx, t = state.text;
+    if (f.lut) out += `&l=${encodeURIComponent(f.lut)}&lm=${f.lutMix}`;
+    if (f.blur !== 'none') out += `&b=${f.blur},${f.blurAmt},${f.blurAngle}`;
+    if (f.half !== 'none') out += `&h=${f.half},${f.halfSize},${f.halfAngle}`;
+    if (f.print) out += `&pt=${f.print}`;
+    if (hasText()) {
+      out += `&tx=${encodeURIComponent(t.str)}&ts=` +
+        [t.font, t.size, t.spacing, t.color.slice(1), t.blend, fmt(t.x), fmt(t.y), t.under ? 1 : 0].join(',');
+    }
     return out;
   };
 
@@ -529,6 +603,42 @@
     state.stops = stops.slice(0, 32);
     state.selected = sorted()[0].id;
     state.grain = Math.round(num('g', 0, 100, 0));
+    state.steps = Math.round(num('n', 0, 24, 0));
+    if (state.steps < 2) state.steps = 0;
+
+    const fx = defaultFx();
+    const look = p.get('l') || '';
+    if (LOOKS[look] || look.startsWith('u:')) fx.lut = look.slice(0, 64);
+    fx.lutMix = Math.round(num('lm', 0, 100, 100));
+    const b = (p.get('b') || '').split(',');
+    if (['soft', 'motion', 'zoom', 'spin'].includes(b[0])) {
+      fx.blur = b[0];
+      fx.blurAmt = clamp(Math.round(+b[1]) || 35, 1, 100);
+      fx.blurAngle = clamp(Math.round(+b[2]) || 0, 0, 180);
+    }
+    const hf = (p.get('h') || '').split(',');
+    if (['color', 'ink', 'cmyk', 'lines'].includes(hf[0])) {
+      fx.half = hf[0];
+      fx.halfSize = clamp(Math.round(+hf[1]) || 10, 4, 40);
+      fx.halfAngle = clamp(Math.round(+hf[2]) || 0, 0, 90);
+    }
+    fx.print = Math.round(num('pt', 0, 100, 0));
+    state.fx = fx;
+
+    const text = defaultText();
+    if (p.has('tx')) {
+      text.str = p.get('tx').slice(0, 400);
+      const ts = (p.get('ts') || '').split(',');
+      if (FONTS[ts[0]]) text.font = ts[0];
+      text.size = clamp(parseFloat(ts[1]) || 12, 2, 40);
+      text.spacing = clamp(Math.round(parseFloat(ts[2])) || 0, -10, 50);
+      text.color = normalizeHex(ts[3] || '') || text.color;
+      if (BLENDS.includes(ts[4])) text.blend = ts[4];
+      text.x = clamp(Number.isFinite(parseFloat(ts[5])) ? parseFloat(ts[5]) : 50, 0, 100);
+      text.y = clamp(Number.isFinite(parseFloat(ts[6])) ? parseFloat(ts[6]) : 50, 0, 100);
+      text.under = ts[7] === '1';
+    }
+    state.text = text;
 
     if (p.has('p')) {
       const pts = p.get('p').split('_').map((pair) => {
@@ -619,8 +729,9 @@
     return stop;
   }
 
-  function drag(onMove) {
+  function drag(onMove, onUp) {
     const up = () => {
+      if (onUp) onUp();
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', up);
       window.removeEventListener('pointercancel', up);
@@ -643,8 +754,37 @@
     if (!stop) return;
     state.selected = stop.id;
     render();
-    handleEls.get(stop.id).focus();
-    drag((ev) => { stop.pos = trackPos(ev); render(); });
+    const el = handleEls.get(stop.id);
+    el.focus();
+    let leaving = false;
+    drag((ev) => {
+      const r = els.track.getBoundingClientRect();
+      const away = Math.max(r.top - ev.clientY, ev.clientY - r.bottom);
+      leaving = state.stops.length > 2 && away > 56;
+      el.classList.toggle('is-leaving', leaving);
+      if (!leaving) stop.pos = trackPos(ev);
+      hud(leaving ? 'Release to remove' : `${fmt(stop.pos)}%`);
+      render();
+    }, () => {
+      el.classList.remove('is-leaving');
+      if (leaving) removeStop(stop.id);
+    });
+  });
+
+  /** Open the browser's color picker for a stop. */
+  function pickColor(id) {
+    const row = rowEls.get(id);
+    const input = row && row.querySelector('input[type="color"]');
+    if (!input) return;
+    try {
+      if (input.showPicker) input.showPicker(); else input.click();
+    } catch (err) {
+      toast('Open the controls to pick a color');
+    }
+  }
+  els.handles.addEventListener('dblclick', (e) => {
+    const h = e.target.closest('.handle');
+    if (h) pickColor(+h.dataset.id);
   });
 
   els.handles.addEventListener('focusin', (e) => {
@@ -753,7 +893,10 @@
   els.preview.addEventListener('pointerdown', (e) => {
     if (e.button || e.target.closest('.canvas-btn')) return;
     e.preventDefault();
+    if (e.target === els.typeHandle) return typePointer(e);
     if (isField()) return hotPointer(e);
+    const dot = e.target.closest('.gdot');
+    if (dot) return guidePointer(e, +dot.dataset.id);
     const apply = (ev) => {
       const r = els.preview.getBoundingClientRect();
       if (state.type === 'linear') {
@@ -879,7 +1022,7 @@
     }
     const type = TYPES[+key - 1];
     if (type) { state.type = type; return render(); }
-    const action = { r: '#random', x: '#reverse', c: '#copy-code', f: '#zen', '?': '#keys-open' }[key];
+    const action = { r: '#random', x: '#reverse', c: '#copy-code', s: '#save', f: '#zen', '?': '#keys-open' }[key];
     if (action) { e.preventDefault(); $(action).click(); }
   });
 
@@ -941,9 +1084,10 @@
     els.h.value = clamp(Math.round(area.clientHeight * dpr), 1, 8192);
   }
 
-  let fitTimer;
+  let fitTimer, fxTimer;
   new ResizeObserver(() => {
     sizeGrain();
+    if (fxActive()) { clearTimeout(fxTimer); fxTimer = setTimeout(render, 160); }
     if (els.size.value !== 'fit') return;
     clearTimeout(fitTimer);
     fitTimer = setTimeout(() => {
@@ -1205,10 +1349,28 @@
 
   /** 1024-step color ramp built from the stops. */
   function buildLut() {
+    const out = buildRamp();
+    const g = grade();
+    if (g) {
+      for (let i = 0; i < out.length; i += 3) {
+        const c = g([out[i], out[i + 1], out[i + 2]]);
+        out[i] = c[0]; out[i + 1] = c[1]; out[i + 2] = c[2];
+      }
+    }
+    return out;
+  }
+
+  function buildRamp() {
     const s = sorted();
     const ok = state.space === 'oklab';
     const cols = s.map((st) => (ok ? rgbToOklab(hexToRgb(st.color)) : hexToRgb(st.color)));
     const out = new Uint8ClampedArray(1024 * 3);
+    if (state.steps > 1) {
+      const n = state.steps;
+      const bands = Array.from({ length: n }, (_, b) => hexToRgb(colorAt((b / (n - 1)) * 100)));
+      for (let i = 0; i < 1024; i++) out.set(bands[Math.min(n - 1, Math.floor((i * n) / 1024))], i * 3);
+      return out;
+    }
     let j = 0;
     for (let i = 0; i < 1024; i++) {
       const p = (i / 1023) * 100;
@@ -1633,9 +1795,12 @@ void main() {
   }
 
   function rdDraw() {
-    if (rd.gpu) return gpuShow();
-    const scale = Math.max(rd.w, rd.h) * 2 <= 960 ? 2 : 1;
-    drawField(els.canvas, rdOutput(), rd.w, rd.h, rd.w * scale, rd.h * scale, lut);
+    if (rd.gpu) gpuShow();
+    else {
+      const scale = Math.max(rd.w, rd.h) * 2 <= 960 ? 2 : 1;
+      drawField(els.canvas, rdOutput(), rd.w, rd.h, rd.w * scale, rd.h * scale, lut);
+    }
+    if (fxActive()) fxPreview(rd.gpu ? els.gl : els.canvas);
   }
 
   function rdFrame() {
@@ -1671,9 +1836,12 @@ void main() {
       sizeGrain();
     }
     els.overlay.hidden = !field;
+    const fxOn = fxActive();
+    els.fx.hidden = !fxOn;
     if (!field) els.canvas.hidden = els.gl.hidden = true;
     if (!field) {
       els.preview.style.background = cssGradient(res);
+      if (fxOn) fxPreview();
       return;
     }
     els.preview.style.background = 'none';
@@ -1683,6 +1851,7 @@ void main() {
       const key = `${fw}x${fh}|${hotKey()}|${state.hot.spread}|${state.hot.soft}`;
       if (key !== shapeCache.key) Object.assign(shapeCache, { key, fw, fh, field: shapeField(fw, fh) });
       drawField(els.canvas, shapeCache.field, fw, fh, fw, fh, lut);
+      if (fxOn) fxPreview(els.canvas);
       els.canvas.hidden = false;
       els.gl.hidden = true;
     } else {
@@ -1801,7 +1970,831 @@ void main() {
   els.rdDetail.addEventListener('input', () => { state.rd.detail = +els.rdDetail.value; render(); });
   els.rdPlay.addEventListener('click', togglePlay);
   els.grain.addEventListener('input', () => { state.grain = +els.grain.value; render(); });
+  els.steps.addEventListener('input', () => {
+    const v = +els.steps.value;
+    state.steps = v > 1 ? v : 0;
+    render();
+  });
   $('#rd-restart').addEventListener('click', () => { rdInit(); render(); });
+
+  /* ---------- the gradient's line on the canvas ---------- */
+
+  const guideEls = new Map();
+  let guideGeo = null; // in percent of the canvas
+
+  function guideDot(key) {
+    let el = guideEls.get(key);
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'gdot';
+      if (key === 'pivot') el.classList.add('is-pivot');
+      else el.dataset.id = key;
+      els.guideDots.append(el);
+      guideEls.set(key, el);
+    }
+    return el;
+  }
+
+  function renderGuide() {
+    els.guide.hidden = isField();
+    if (isField()) return;
+    const { w, h } = exportSize();
+    const g = geometry(w, h);
+    const px = (x) => (x / w) * 100, py = (y) => (y / h) * 100;
+    let line, at;
+    if (state.type === 'linear') {
+      line = [px(g.x1), py(g.y1), px(g.x2), py(g.y2)];
+      at = (t) => [line[0] + (line[2] - line[0]) * t, line[1] + (line[3] - line[1]) * t];
+    } else if (state.type === 'radial') {
+      // from the center to the farthest corner, which is where the last stop lands
+      line = [state.cx, state.cy, state.cx < 50 ? 100 : 0, state.cy < 50 ? 100 : 0];
+      at = (t) => [line[0] + (line[2] - line[0]) * t, line[1] + (line[3] - line[1]) * t];
+    } else {
+      const r = Math.min(w, h) * 0.3;
+      at = (t) => {
+        const a = ((state.angle + t * 360) * Math.PI) / 180;
+        return [px(g.cx + r * Math.sin(a)), py(g.cy - r * Math.cos(a))];
+      };
+      line = [state.cx, state.cy, ...at(0)];
+    }
+    guideGeo = { line };
+    for (const el of els.guideLines) {
+      el.setAttribute('x1', line[0]); el.setAttribute('y1', line[1]);
+      el.setAttribute('x2', line[2]); el.setAttribute('y2', line[3]);
+    }
+    const keys = new Set(state.stops.map((s) => s.id));
+    if (state.type !== 'linear') keys.add('pivot');
+    for (const [key, el] of guideEls) if (!keys.has(key)) { el.remove(); guideEls.delete(key); }
+    if (state.type !== 'linear') {
+      const pivot = guideDot('pivot');
+      pivot.style.left = state.cx + '%';
+      pivot.style.top = state.cy + '%';
+    }
+    for (const s of state.stops) {
+      const el = guideDot(s.id);
+      const [x, y] = at(s.pos / 100);
+      el.style.left = x + '%';
+      el.style.top = y + '%';
+      el.style.setProperty('--c', s.color);
+      el.classList.toggle('is-selected', s.id === state.selected);
+    }
+  }
+
+  /** Drag a stop along the line on the canvas. */
+  function guidePointer(e, id) {
+    const stop = byId(id);
+    if (!stop) return;
+    state.selected = id;
+    render();
+    drag((ev) => {
+      const r = els.preview.getBoundingClientRect();
+      const [x1, y1, x2, y2] = guideGeo.line;
+      const ax = r.left + (x1 / 100) * r.width, ay = r.top + (y1 / 100) * r.height;
+      const dx = ev.clientX - ax, dy = ev.clientY - ay;
+      if (state.type === 'conic') {
+        if (Math.hypot(dx, dy) < 4) return;
+        const a = (Math.atan2(dx, -dy) * 180) / Math.PI;
+        stop.pos = +(((((a - state.angle) % 360) + 360) % 360) / 3.6).toFixed(1);
+      } else {
+        const lx = ((x2 - x1) / 100) * r.width, ly = ((y2 - y1) / 100) * r.height;
+        stop.pos = clamp(+(((dx * lx + dy * ly) / (lx * lx + ly * ly)) * 100).toFixed(1), 0, 100);
+      }
+      hud(`${fmt(stop.pos)}%`);
+      render();
+    });
+  }
+
+  els.guideDots.addEventListener('dblclick', (e) => {
+    const dot = e.target.closest('.gdot');
+    if (dot && dot.dataset.id) pickColor(+dot.dataset.id);
+  });
+
+  /* ---------- saved gradients (kept in this browser) ---------- */
+
+  const SAVED_KEY = 'gradient-saved';
+  let saved = [];
+  try {
+    const raw = JSON.parse(localStorage.getItem(SAVED_KEY));
+    if (Array.isArray(raw)) saved = raw.filter((v) => typeof v === 'string').slice(0, 24);
+  } catch (e) { /* private mode, or nothing saved */ }
+
+  function storeSaved() {
+    try { localStorage.setItem(SAVED_KEY, JSON.stringify(saved)); } catch (e) { /* private mode */ }
+  }
+
+  function renderSaved() {
+    els.saved.textContent = '';
+    els.savedNote.hidden = saved.length > 0;
+    els.saved.hidden = !saved.length;
+    saved.forEach((str, i) => {
+      const stops = (new URLSearchParams(str).get('s') || '').split(',')
+        .map((part) => { const [c, pos] = part.split(':'); return [normalizeHex(c || ''), parseFloat(pos)]; })
+        .filter(([c, pos]) => c && Number.isFinite(pos));
+      if (stops.length < 2) return;
+      const item = document.createElement('div');
+      item.className = 'saved-item';
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'preset';
+      b.dataset.i = i;
+      b.setAttribute('aria-label', `Saved gradient ${i + 1}`);
+      b.style.background = `linear-gradient(135deg, ${stops.map(([c, pos]) => `${c} ${pos}%`).join(', ')})`;
+      const x = document.createElement('button');
+      x.type = 'button';
+      x.className = 'saved-x';
+      x.dataset.i = i;
+      x.title = 'Remove';
+      x.setAttribute('aria-label', `Remove saved gradient ${i + 1}`);
+      x.innerHTML = '<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M3 3l8 8M11 3l-8 8"/></svg>';
+      item.append(b, x);
+      els.saved.append(item);
+    });
+  }
+
+  $('#save').addEventListener('click', () => {
+    commit();
+    const now = serialize();
+    if (saved.includes(now)) return toast('Already saved');
+    saved.unshift(now);
+    saved = saved.slice(0, 24);
+    storeSaved();
+    renderSaved();
+    toast('Saved in this browser');
+  });
+
+  els.saved.addEventListener('click', (e) => {
+    const x = e.target.closest('.saved-x');
+    if (x) {
+      saved.splice(+x.dataset.i, 1);
+      storeSaved();
+      renderSaved();
+      return;
+    }
+    const b = e.target.closest('.preset');
+    if (!b) return;
+    commit();
+    if (deserialize(saved[+b.dataset.i])) render({ forceOrder: true });
+  });
+
+  /* ------------------------------------------------------------------ *
+   * Effects: color grade, blur, halftone, print texture, type
+   *
+   * The color grade changes the gradient's colors themselves, so it shows
+   * in every export. The rest is drawn on a canvas on top of the gradient
+   * and is only in PNG and JPG downloads.
+   * Sizes are in thousandths of the picture's long side ("u"), so the
+   * preview and a download of any size look the same.
+   * ------------------------------------------------------------------ */
+
+  /* ---------- color grade ---------- */
+
+  // name, then: sat (saturation), sh / hi (tint added to shadows / highlights),
+  // con (contrast), fade (lifted blacks), swap (rotate the channels), neg (invert)
+  const LOOKS = {
+    film: ['Warm film', { sh: [-0.02, 0, 0.04], hi: [0.06, 0.02, -0.06], con: 1.08, sat: 0.95, fade: 0.05 }],
+    teal: ['Teal and orange', { sh: [-0.07, 0.02, 0.09], hi: [0.09, 0.02, -0.09], con: 1.1, sat: 1.1 }],
+    matte: ['Faded matte', { con: 0.88, sat: 0.8, fade: 0.14 }],
+    bleach: ['Bleach bypass', { con: 1.3, sat: 0.45 }],
+    cross: ['Cross process', { sh: [0, 0.05, 0.12], hi: [0.08, 0.07, -0.12], con: 1.15, sat: 1.15 }],
+    cold: ['Cold night', { sh: [-0.04, 0, 0.08], hi: [-0.04, 0.01, 0.06], con: 1.05, sat: 0.85 }],
+    sepia: ['Sepia', { sat: 0, sh: [0.05, 0, -0.05], hi: [0.09, 0.03, -0.08] }],
+    noir: ['Noir', { sat: 0, con: 1.25 }],
+    acid: ['Acid', { swap: true, sat: 1.15 }],
+    neg: ['Negative', { neg: true }],
+  };
+
+  function lookFn(p) {
+    const sh = p.sh || [0, 0, 0], hi = p.hi || [0, 0, 0];
+    const con = p.con === undefined ? 1 : p.con, sat = p.sat === undefined ? 1 : p.sat, fade = p.fade || 0;
+    return (r, g, b) => {
+      if (p.neg) { r = 1 - r; g = 1 - g; b = 1 - b; }
+      if (p.swap) { const t = r; r = g; g = b; b = t; }
+      const l = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      const ws = (1 - l) * (1 - l), wh = l * l;
+      return [r, g, b].map((v, i) => {
+        v = l + (v - l) * sat;
+        v += sh[i] * ws + hi[i] * wh;
+        v = (v - 0.5) * con + 0.5;
+        return clamp(fade * 0.6 + v * (1 - fade), 0, 1);
+      });
+    };
+  }
+
+  /** A .cube file: a grid of n x n x n colors, red changing fastest. */
+  function parseCube(text) {
+    let n = 0;
+    const vals = [];
+    for (const raw of text.split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line || line[0] === '#') continue;
+      if (/^LUT_3D_SIZE/i.test(line)) { n = parseInt(line.split(/\s+/)[1], 10); continue; }
+      if (/^[A-Za-z_]/.test(line)) continue; // TITLE, DOMAIN_MIN and the like
+      const p = line.split(/\s+/);
+      if (p.length >= 3) vals.push(+p[0], +p[1], +p[2]);
+    }
+    if (!(n >= 2 && n <= 65) || vals.length !== n * n * n * 3) return null;
+    const data = Float32Array.from(vals);
+    for (let i = 0; i < data.length; i++) if (!Number.isFinite(data[i])) return null;
+    return { n, data };
+  }
+
+  function cubeFn({ n, data }) {
+    const m = n - 1;
+    return (r, g, b) => {
+      const x = clamp(r, 0, 1) * m, y = clamp(g, 0, 1) * m, z = clamp(b, 0, 1) * m;
+      const x0 = Math.min(m - 1, Math.floor(x)), y0 = Math.min(m - 1, Math.floor(y)), z0 = Math.min(m - 1, Math.floor(z));
+      const fx = x - x0, fy = y - y0, fz = z - z0;
+      const out = [0, 0, 0];
+      for (let dz = 0; dz < 2; dz++) {
+        for (let dy = 0; dy < 2; dy++) {
+          for (let dx = 0; dx < 2; dx++) {
+            const wt = (dx ? fx : 1 - fx) * (dy ? fy : 1 - fy) * (dz ? fz : 1 - fz);
+            const i = ((x0 + dx) + (y0 + dy) * n + (z0 + dz) * n * n) * 3;
+            out[0] += wt * data[i]; out[1] += wt * data[i + 1]; out[2] += wt * data[i + 2];
+          }
+        }
+      }
+      return out;
+    };
+  }
+
+  const userLuts = new Map(); // name -> { n, data }
+  let gradeCache = { key: null, fn: null };
+
+  /** The current color grade as a function on [r, g, b] in 0..255, or null. */
+  function grade() {
+    const { lut, lutMix } = state.fx;
+    if (!lut || !lutMix) return null;
+    const key = `${lut}|${lutMix}`;
+    if (gradeCache.key === key) return gradeCache.fn;
+    let core = null;
+    if (lut.startsWith('u:')) {
+      const found = userLuts.get(lut.slice(2));
+      if (found) core = cubeFn(found);
+    } else if (LOOKS[lut]) core = lookFn(LOOKS[lut][1]);
+    const m = lutMix / 100;
+    const fn = core && ((rgb) => {
+      const o = core(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255);
+      return [rgb[0] + (o[0] * 255 - rgb[0]) * m, rgb[1] + (o[1] * 255 - rgb[1]) * m, rgb[2] + (o[2] * 255 - rgb[2]) * m];
+    });
+    gradeCache = { key, fn };
+    return fn;
+  }
+
+  /* loaded LUTs are kept in the browser's own database */
+  const lutDb = () => new Promise((res, rej) => {
+    const rq = indexedDB.open('gradient', 1);
+    rq.onupgradeneeded = () => rq.result.createObjectStore('luts', { keyPath: 'name' });
+    rq.onsuccess = () => res(rq.result);
+    rq.onerror = () => rej(rq.error);
+  });
+  async function lutStore(mode, fn) {
+    try {
+      const db = await lutDb();
+      return await new Promise((res, rej) => {
+        const tx = db.transaction('luts', mode);
+        const rq = fn(tx.objectStore('luts'));
+        tx.oncomplete = () => res(rq && rq.result);
+        tx.onerror = () => rej(tx.error);
+      });
+    } catch (e) {
+      return null; // private mode: LUTs last until the page closes
+    }
+  }
+
+  function renderLutOptions() {
+    els.lut.textContent = '';
+    const opt = (value, label, parent) => {
+      const o = document.createElement('option');
+      o.value = value;
+      o.textContent = label;
+      parent.append(o);
+    };
+    opt('', 'None', els.lut);
+    const built = document.createElement('optgroup');
+    built.label = 'Built in';
+    for (const key of Object.keys(LOOKS)) opt(key, LOOKS[key][0], built);
+    els.lut.append(built);
+    if (userLuts.size) {
+      const mine = document.createElement('optgroup');
+      mine.label = 'Your LUTs';
+      for (const name of [...userLuts.keys()].sort()) opt('u:' + name, name, mine);
+      els.lut.append(mine);
+    }
+  }
+
+  lutStore('readonly', (s) => s.getAll()).then((rows) => {
+    if (!rows || !rows.length) return;
+    for (const row of rows) {
+      if (row && typeof row.name === 'string' && row.data && row.n) userLuts.set(row.name, { n: row.n, data: row.data });
+    }
+    renderLutOptions();
+    gradeCache.key = null;
+    render();
+  });
+
+  $('#lut-load').addEventListener('click', () => els.lutFile.click());
+  els.lutFile.addEventListener('change', async () => {
+    const files = [...els.lutFile.files].slice(0, 80);
+    els.lutFile.value = '';
+    if (!files.length) return;
+    toast(files.length > 1 ? `Reading ${files.length} LUTs` : 'Reading the LUT');
+    let ok = 0, last = '';
+    for (const file of files) {
+      if (file.size > 16e6) continue;
+      let parsed = null;
+      try { parsed = parseCube(await file.text()); } catch (e) { /* unreadable */ }
+      if (!parsed) continue;
+      const name = file.name.replace(/\.cube$/i, '').replace(/_+/g, ' ').trim().slice(0, 60) || 'LUT';
+      userLuts.set(name, parsed);
+      await lutStore('readwrite', (s) => s.put({ name, n: parsed.n, data: parsed.data }));
+      ok++;
+      last = name;
+    }
+    if (!ok) return toast('None of those were usable 3D .cube files');
+    renderLutOptions();
+    commit();
+    state.fx.lut = 'u:' + last;
+    gradeCache.key = null;
+    render();
+    toast(ok === 1 ? `Loaded ${last}` : `Loaded ${ok} LUTs`);
+  });
+  $('#lut-remove').addEventListener('click', () => {
+    if (!state.fx.lut.startsWith('u:')) return;
+    const name = state.fx.lut.slice(2);
+    userLuts.delete(name);
+    lutStore('readwrite', (s) => s.delete(name));
+    state.fx.lut = '';
+    renderLutOptions();
+    render();
+  });
+
+  /* ---------- canvas helpers ---------- */
+
+  const scratchPool = new Map();
+  /** A reusable off-screen canvas. Setting its size also clears it. */
+  function scratch(slot, w, h) {
+    let c = scratchPool.get(slot);
+    if (!c) { c = document.createElement('canvas'); scratchPool.set(slot, c); }
+    c.width = Math.max(1, Math.round(w));
+    c.height = Math.max(1, Math.round(h));
+    return c;
+  }
+
+  /** A copy of the canvas with its edge pixels stretched outward, so a blur has something to pull in. */
+  function padded(src, pad) {
+    const w = src.width, h = src.height;
+    const c = scratch('pad', w + pad * 2, h + pad * 2);
+    const t = c.getContext('2d');
+    t.drawImage(src, pad, pad);
+    if (pad) {
+      t.drawImage(src, 0, 0, w, 1, pad, 0, w, pad);
+      t.drawImage(src, 0, h - 1, w, 1, pad, pad + h, w, pad);
+      t.drawImage(src, 0, 0, 1, h, 0, pad, pad, h);
+      t.drawImage(src, w - 1, 0, 1, h, pad + w, pad, pad, h);
+      t.drawImage(src, 0, 0, 1, 1, 0, 0, pad, pad);
+      t.drawImage(src, w - 1, 0, 1, 1, pad + w, 0, pad, pad);
+      t.drawImage(src, 0, h - 1, 1, 1, 0, pad + h, pad, pad);
+      t.drawImage(src, w - 1, h - 1, 1, 1, pad + w, pad + h, pad, pad);
+    }
+    return c;
+  }
+
+  /* ---------- blur ---------- */
+
+  function blurFx(canvas, ctx, w, h, u) {
+    const { blur, blurAmt, blurAngle } = state.fx;
+    const k = blurAmt / 100;
+    const canFilter = typeof ctx.filter === 'string';
+    const centered = state.type === 'radial' || state.type === 'conic';
+    const cx = ((centered ? state.cx : 50) / 100) * w, cy = ((centered ? state.cy : 50) / 100) * h;
+    const N = 32;
+    ctx.save();
+    if (blur === 'soft') {
+      const r = Math.max(0.5, k * k * 90 * u);
+      const pad = Math.ceil(r * 2.5);
+      const src = padded(canvas, pad);
+      if (canFilter) {
+        ctx.filter = `blur(${r}px)`;
+        ctx.drawImage(src, -pad, -pad);
+      } else {
+        // no canvas filters here (older Safari): shrink the picture and grow it back
+        const f = Math.max(1, r / 1.5);
+        const small = scratch('small', src.width / f, src.height / f);
+        const sc = small.getContext('2d');
+        sc.imageSmoothingQuality = 'high';
+        sc.drawImage(src, 0, 0, small.width, small.height);
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(small, -pad, -pad, src.width, src.height);
+      }
+    } else if (blur === 'motion') {
+      const d = Math.max(1, k * 150 * u), a = (blurAngle * Math.PI) / 180;
+      const pad = Math.ceil(d) + 2;
+      const src = padded(canvas, pad);
+      if (canFilter) ctx.filter = `blur(${Math.max(0.5, d / N)}px)`;
+      for (let i = 0; i < N; i++) {
+        const off = (i / (N - 1) - 0.5) * 2 * d;
+        ctx.globalAlpha = 1 / (i + 1); // a running average of all the copies
+        ctx.drawImage(src, -pad + Math.cos(a) * off, -pad + Math.sin(a) * off);
+      }
+    } else if (blur === 'zoom') {
+      const src = padded(canvas, 0);
+      for (let i = 0; i < N; i++) {
+        const s = 1 + k * 0.45 * (i / (N - 1));
+        ctx.globalAlpha = 1 / (i + 1);
+        ctx.setTransform(s, 0, 0, s, cx * (1 - s), cy * (1 - s));
+        ctx.drawImage(src, 0, 0);
+      }
+    } else if (blur === 'spin') {
+      const ang = k * 0.7;
+      const pad = Math.ceil(Math.hypot(w, h) * Math.sin(ang / 2)) + 2;
+      const src = padded(canvas, pad);
+      for (let i = 0; i < N; i++) {
+        const t = (i / (N - 1) - 0.5) * ang, co = Math.cos(t), si = Math.sin(t);
+        ctx.globalAlpha = 1 / (i + 1);
+        ctx.setTransform(co, si, -si, co, cx - cx * co + cy * si, cy - cx * si - cy * co);
+        ctx.drawImage(src, -pad, -pad);
+      }
+    }
+    ctx.restore();
+  }
+
+  /* ---------- halftone ---------- */
+
+  const luma = (r, g, b) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  const PAPER = '#f4f0e6';
+
+  function halftoneFx(canvas, ctx, w, h, u) {
+    const { half, halfSize, halfAngle } = state.fx;
+    const cell = Math.max(3, halfSize * u);
+    // a small copy of the picture to read colors from, about two samples per cell
+    const sw = clamp(Math.round((w / cell) * 2), 2, 1400), sh = clamp(Math.round((h / cell) * 2), 2, 1400);
+    const small = scratch('small', sw, sh);
+    const sc = small.getContext('2d', { willReadFrequently: true });
+    sc.imageSmoothingQuality = 'high';
+    sc.drawImage(canvas, 0, 0, sw, sh);
+    const px = sc.getImageData(0, 0, sw, sh).data;
+    const cx = w / 2, cy = h / 2;
+    const reach = Math.ceil((Math.hypot(w, h) / 2 + cell) / cell) * cell;
+
+    /** Visit every cell of a grid turned by `deg`, with the picture's color there. */
+    const each = (deg, fn) => {
+      const a = (deg * Math.PI) / 180, co = Math.cos(a), si = Math.sin(a);
+      for (let gy = -reach; gy <= reach; gy += cell) {
+        for (let gx = -reach; gx <= reach; gx += cell) {
+          const x = cx + gx * co - gy * si, y = cy + gx * si + gy * co;
+          if (x < -cell || y < -cell || x > w + cell || y > h + cell) continue;
+          const o = (clamp(Math.floor((y / h) * sh), 0, sh - 1) * sw + clamp(Math.floor((x / w) * sw), 0, sw - 1)) * 4;
+          fn(x, y, px[o] / 255, px[o + 1] / 255, px[o + 2] / 255, gx, gy);
+        }
+      }
+    };
+    /** One ink: a dot per cell, its area set by `amount` (0 to 1). Drawn as a single path. */
+    const dots = (deg, amount) => {
+      ctx.beginPath();
+      each(deg, (x, y, r, g, b) => {
+        const v = amount(r, g, b);
+        if (v <= 0.004) return;
+        const rad = cell * 0.72 * Math.sqrt(v);
+        ctx.moveTo(x + rad, y);
+        ctx.arc(x, y, rad, 0, 6.2832);
+      });
+      ctx.fill();
+    };
+
+    ctx.save();
+    if (half === 'color') {
+      ctx.fillStyle = PAPER;
+      ctx.fillRect(0, 0, w, h);
+      each(halfAngle, (x, y, r, g, b) => {
+        const rad = cell * 0.68 * Math.sqrt(0.3 + 0.7 * (1 - luma(r, g, b)));
+        ctx.fillStyle = `rgb(${Math.round(r * 255)},${Math.round(g * 255)},${Math.round(b * 255)})`;
+        ctx.beginPath();
+        ctx.arc(x, y, rad, 0, 6.2832);
+        ctx.fill();
+      });
+    } else if (half === 'cmyk') {
+      ctx.fillStyle = PAPER;
+      ctx.fillRect(0, 0, w, h);
+      ctx.globalCompositeOperation = 'multiply';
+      const key = (r, g, b) => 1 - Math.max(r, g, b);
+      const part = (v, k) => (k >= 0.999 ? 0 : (1 - v - k) / (1 - k));
+      ctx.fillStyle = '#00a6e4'; dots(halfAngle + 15, (r, g, b) => part(r, key(r, g, b)));
+      ctx.fillStyle = '#ea0a8c'; dots(halfAngle + 75, (r, g, b) => part(g, key(r, g, b)));
+      ctx.fillStyle = '#ffe800'; dots(halfAngle, (r, g, b) => part(b, key(r, g, b)));
+      ctx.fillStyle = '#26221f'; dots(halfAngle + 45, (r, g, b) => key(r, g, b) * 0.9);
+    } else {
+      // two inks: the gradient's lightest color is the paper, its darkest is the ink
+      const cols = resolved().map((s) => s.color);
+      const lum = (hex) => { const c = hexToRgb(hex); return luma(c[0] / 255, c[1] / 255, c[2] / 255); };
+      cols.sort((p, q) => lum(q) - lum(p));
+      let paper = cols[0];
+      const ink = cols[cols.length - 1];
+      let hiL = lum(paper);
+      const loL = lum(ink);
+      if (hiL - loL < 0.2) { paper = PAPER; hiL = lum(PAPER); }
+      const amount = (r, g, b) => clamp((hiL - luma(r, g, b)) / Math.max(0.05, hiL - loL), 0, 1);
+      ctx.fillStyle = paper;
+      ctx.fillRect(0, 0, w, h);
+      ctx.fillStyle = ink;
+      if (half === 'ink') dots(halfAngle, amount);
+      else {
+        // lines: each cell adds a short piece of a stripe, thicker where the picture is darker
+        const a = (halfAngle * Math.PI) / 180;
+        ctx.translate(cx, cy);
+        ctx.rotate(a);
+        ctx.beginPath();
+        each(halfAngle, (x, y, r, g, b, gx, gy) => {
+          const t = cell * 0.96 * amount(r, g, b);
+          if (t > 0.05) ctx.rect(gx - cell / 2 - 0.3, gy - t / 2, cell + 0.6, t);
+        });
+        ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+
+  /* ---------- print texture: uneven paper, a warm tint, specks where the ink missed ---------- */
+
+  let printCache = null;
+  function printTiles() {
+    if (printCache) return printCache;
+    const N = 512;
+    let seed = 0x2545f491;
+    const rnd = () => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    // smooth noise that repeats at the tile's edges
+    const layer = (cells) => {
+      const g = new Float32Array(cells * cells);
+      for (let i = 0; i < g.length; i++) g[i] = rnd();
+      return (x, y) => {
+        const fx = (x / N) * cells, fy = (y / N) * cells;
+        const x0 = Math.floor(fx), y0 = Math.floor(fy);
+        let tx = fx - x0, ty = fy - y0;
+        tx = tx * tx * (3 - 2 * tx); ty = ty * ty * (3 - 2 * ty);
+        const x1 = (x0 + 1) % cells, y1 = (y0 + 1) % cells;
+        const top = g[y0 * cells + x0] + (g[y0 * cells + x1] - g[y0 * cells + x0]) * tx;
+        const bot = g[y1 * cells + x0] + (g[y1 * cells + x1] - g[y1 * cells + x0]) * tx;
+        return top + (bot - top) * ty;
+      };
+    };
+    const big = layer(6), mid = layer(28), fine = layer(120);
+    const paper = scratch('print-paper', N, N), specks = scratch('print-specks', N, N);
+    const pc = paper.getContext('2d'), sc = specks.getContext('2d');
+    const pim = pc.createImageData(N, N), sim = sc.createImageData(N, N);
+    for (let y = 0, o = 0; y < N; y++) {
+      for (let x = 0; x < N; x++, o += 4) {
+        const v = 0.45 * big(x, y) + 0.3 * mid(x, y) + 0.25 * fine(x, y);
+        const shade = 255 * (0.74 + 0.26 * v) + (rnd() - 0.5) * 16;
+        pim.data[o] = pim.data[o + 1] = pim.data[o + 2] = shade;
+        pim.data[o + 3] = 255;
+        // ink drops out where the fine noise peaks
+        const miss = fine(x + 37, y + 91) * 0.6 + rnd() * 0.4;
+        if (miss > 0.83) {
+          sim.data[o] = 246; sim.data[o + 1] = 242; sim.data[o + 2] = 232;
+          sim.data[o + 3] = clamp((miss - 0.83) * 2600, 0, 235);
+        }
+      }
+    }
+    pc.putImageData(pim, 0, 0);
+    sc.putImageData(sim, 0, 0);
+    return (printCache = [paper, specks]);
+  }
+
+  function printFx(ctx, w, h) {
+    const k = state.fx.print / 100;
+    const [paper, specks] = printTiles();
+    const s = Math.max(w, h) / 1500;
+    const fill = (tile) => {
+      const p = ctx.createPattern(tile, 'repeat');
+      if (p.setTransform) p.setTransform(new DOMMatrix([s, 0, 0, s, 0, 0]));
+      ctx.fillStyle = p;
+      ctx.fillRect(0, 0, w, h);
+    };
+    ctx.save();
+    ctx.globalCompositeOperation = 'multiply';
+    ctx.globalAlpha = k;
+    fill(paper);
+    ctx.globalAlpha = k * 0.3;
+    ctx.fillStyle = '#efe2c6';
+    ctx.fillRect(0, 0, w, h);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = k * 0.85;
+    fill(specks);
+    ctx.restore();
+  }
+
+  /* ---------- type ---------- */
+
+  // label, then a canvas font with % where the size goes
+  const FONTS = {
+    sans: ['Sans bold', '700 %px "Neue Haas Unica Pro", "Neue Haas Unica", "Helvetica Neue", Helvetica, Arial, sans-serif'],
+    light: ['Sans light', '300 %px "Neue Haas Unica Pro", "Neue Haas Unica", "Helvetica Neue", Helvetica, Arial, sans-serif'],
+    serif: ['Serif', '400 %px "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif'],
+    italic: ['Serif italic', 'italic 400 %px Georgia, "Times New Roman", serif'],
+    mono: ['Mono', '500 %px ui-monospace, "SF Mono", "Cascadia Code", Consolas, Menlo, monospace'],
+    poster: ['Poster', '400 %px Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif'],
+  };
+  const BLENDS = ['normal', 'overlay', 'soft-light', 'difference', 'multiply', 'screen'];
+  const hasText = () => state.text.str.trim().length > 0;
+
+  function drawType(ctx, w, h) {
+    const t = state.text;
+    const size = (t.size / 100) * w;
+    const lines = t.str.split('\n');
+    const lh = size * 1.05;
+    ctx.save();
+    ctx.font = FONTS[t.font][1].replace('%', size.toFixed(2));
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    try { ctx.letterSpacing = `${((t.spacing / 100) * size).toFixed(2)}px`; } catch (e) { /* not in this browser */ }
+    ctx.fillStyle = t.color;
+    ctx.globalCompositeOperation = t.blend === 'normal' ? 'source-over' : t.blend;
+    const y0 = (h * t.y) / 100 - ((lines.length - 1) * lh) / 2;
+    lines.forEach((line, i) => ctx.fillText(line, (w * t.x) / 100, y0 + i * lh));
+    ctx.restore();
+  }
+
+  /* ---------- putting it together ---------- */
+
+  const fxActive = () =>
+    state.fx.blur !== 'none' || state.fx.half !== 'none' || state.fx.print > 0 || hasText();
+
+  /** Everything that goes over the gradient, except grain, which is laid on last. */
+  function finishFx(canvas) {
+    if (!fxActive()) return;
+    const w = canvas.width, h = canvas.height, u = Math.max(w, h) / 1000;
+    const ctx = canvas.getContext('2d');
+    const text = hasText();
+    if (text && state.text.under) drawType(ctx, w, h);
+    if (state.fx.blur !== 'none') blurFx(canvas, ctx, w, h, u);
+    if (state.fx.half !== 'none') halftoneFx(canvas, ctx, w, h, u);
+    if (state.fx.print) printFx(ctx, w, h);
+    if (text && !state.text.under) drawType(ctx, w, h);
+  }
+
+  /** Draw the effects into the preview. `src` is the canvas holding a field gradient, if any. */
+  function fxPreview(src) {
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    let pw = els.preview.clientWidth * dpr, ph = els.preview.clientHeight * dpr;
+    if (!pw || !ph) return;
+    const f = Math.min(1, 1400 / Math.max(pw, ph));
+    pw = Math.round(pw * f);
+    ph = Math.round(ph * f);
+    const c = els.fx;
+    if (src) {
+      c.width = pw;
+      c.height = ph;
+      const ctx = c.getContext('2d');
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(src, 0, 0, pw, ph);
+    } else {
+      paintBase(c, pw, ph);
+    }
+    finishFx(c);
+  }
+
+  /* ---------- effect controls ---------- */
+
+  renderLutOptions();
+  for (const key of Object.keys(FONTS)) {
+    const o = document.createElement('option');
+    o.value = key;
+    o.textContent = FONTS[key][0];
+    els.textFont.append(o);
+  }
+
+  // ready-made looks: effect settings, then grain and steps
+  const FX_PRESETS = [
+    ['Dreamy', { blur: 'soft', blurAmt: 45, lut: 'film', lutMix: 70 }, { grain: 22 }],
+    ['Riso', { half: 'ink', halfSize: 9, halfAngle: 30, print: 60 }, { grain: 18 }],
+    ['Newsprint', { half: 'cmyk', halfSize: 8, halfAngle: 15, print: 45 }, {}],
+    ['Poster', { print: 40 }, { grain: 12, steps: 6 }],
+    ['Film', { lut: 'film', blur: 'soft', blurAmt: 10 }, { grain: 38 }],
+    ['Speed', { blur: 'motion', blurAmt: 60, blurAngle: 20 }, { grain: 14 }],
+    ['Warp', { blur: 'zoom', blurAmt: 65 }, { grain: 10 }],
+    ['Engraved', { half: 'lines', halfSize: 8, halfAngle: 35, print: 30 }, {}],
+    ['Pop dots', { half: 'color', halfSize: 14, halfAngle: 45 }, {}],
+  ];
+  const looksEl = $('#looks');
+  FX_PRESETS.forEach(([name], i) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'chip';
+    b.dataset.i = i;
+    b.textContent = name;
+    looksEl.append(b);
+  });
+  looksEl.addEventListener('click', (e) => {
+    const b = e.target.closest('.chip');
+    if (!b) return;
+    const [, fx, extra] = FX_PRESETS[+b.dataset.i];
+    commit();
+    state.fx = Object.assign(defaultFx(), fx);
+    state.grain = extra.grain || 0;
+    state.steps = extra.steps || 0;
+    render();
+  });
+  $('#fx-clear').addEventListener('click', () => {
+    commit();
+    state.fx = defaultFx();
+    state.grain = 0;
+    render();
+  });
+
+  const fxInput = (el, key, event) => el.addEventListener(event || 'input', () => {
+    state.fx[key] = el.type === 'range' ? +el.value : el.value;
+    render();
+  });
+  fxInput(els.lut, 'lut', 'change');
+  fxInput(els.lutMix, 'lutMix');
+  fxInput(els.blur, 'blur', 'change');
+  fxInput(els.blurAmt, 'blurAmt');
+  fxInput(els.blurAngle, 'blurAngle');
+  fxInput(els.half, 'half', 'change');
+  fxInput(els.halfSize, 'halfSize');
+  fxInput(els.halfAngle, 'halfAngle');
+  fxInput(els.print, 'print');
+
+  els.text.addEventListener('input', () => { state.text.str = els.text.value.slice(0, 400); render(); });
+  els.textFont.addEventListener('change', () => { state.text.font = els.textFont.value; render(); });
+  els.textSize.addEventListener('input', () => { state.text.size = +els.textSize.value; render(); });
+  els.textSpacing.addEventListener('input', () => { state.text.spacing = +els.textSpacing.value; render(); });
+  els.textColor.addEventListener('input', () => { state.text.color = els.textColor.value.toLowerCase(); render(); });
+  els.textBlend.addEventListener('change', () => { state.text.blend = els.textBlend.value; render(); });
+  $('#text-under').addEventListener('change', () => { state.text.under = radio('text-under') === '1'; render(); });
+
+  function renderFxControls() {
+    const f = state.fx, t = state.text;
+    els.lut.value = f.lut;
+    if (els.lut.value !== f.lut) els.lut.value = ''; // a LUT this browser does not have
+    els.lutMixRow.hidden = !f.lut;
+    setValue(els.lutMix, f.lutMix);
+    els.lutMixOut.textContent = f.lutMix;
+    els.lutRemove.hidden = !f.lut.startsWith('u:');
+    els.blur.value = f.blur;
+    els.blurAmtRow.hidden = f.blur === 'none';
+    els.blurAngleRow.hidden = f.blur !== 'motion';
+    setValue(els.blurAmt, f.blurAmt);
+    setValue(els.blurAngle, f.blurAngle);
+    els.blurAmtOut.textContent = f.blurAmt;
+    els.blurAngleOut.textContent = f.blurAngle;
+    els.half.value = f.half;
+    els.halfSizeRow.hidden = els.halfAngleRow.hidden = f.half === 'none';
+    setValue(els.halfSize, f.halfSize);
+    setValue(els.halfAngle, f.halfAngle);
+    els.halfSizeOut.textContent = f.halfSize;
+    els.halfAngleOut.textContent = f.halfAngle;
+    setValue(els.print, f.print);
+    els.printOut.textContent = f.print;
+
+    setValue(els.text, t.str);
+    els.textRows.hidden = !hasText();
+    els.textFont.value = t.font;
+    setValue(els.textSize, t.size);
+    setValue(els.textSpacing, t.spacing);
+    els.textSizeOut.textContent = fmt(t.size);
+    els.textSpacingOut.textContent = t.spacing;
+    setValue(els.textColor, t.color);
+    els.textBlend.value = t.blend;
+    setRadio('text-under', t.under ? '1' : '0');
+
+    // the T handle sits just under the text block
+    els.typeHandle.hidden = !hasText();
+    if (hasText()) {
+      const { w, h } = exportSize();
+      const half = (t.str.split('\n').length * t.size * 1.05) / 2; // in % of the width
+      els.typeHandle.style.left = t.x + '%';
+      els.typeHandle.style.top = t.y + (half * w) / h + '%';
+    }
+  }
+
+  function typePointer(e) {
+    els.typeHandle.focus();
+    const t = state.text;
+    const r = els.preview.getBoundingClientRect();
+    const dx = e.clientX - (r.left + (t.x / 100) * r.width), dy = e.clientY - (r.top + (t.y / 100) * r.height);
+    drag((ev) => {
+      t.x = clamp(+((((ev.clientX - dx) - r.left) / r.width) * 100).toFixed(1), 0, 100);
+      t.y = clamp(+((((ev.clientY - dy) - r.top) / r.height) * 100).toFixed(1), 0, 100);
+      hud(`${fmt(t.x)}% · ${fmt(t.y)}%`);
+      render();
+    });
+  }
+  els.typeHandle.addEventListener('dblclick', () => els.text.focus());
+  els.typeHandle.addEventListener('keydown', (e) => {
+    const step = e.shiftKey ? 10 : 1;
+    const d = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
+    if (!d) return;
+    e.preventDefault();
+    state.text.x = clamp(state.text.x + d[0], 0, 100);
+    state.text.y = clamp(state.text.y + d[1], 0, 100);
+    render();
+  });
 
   /* ------------------------------------------------------------------ *
    * Start
@@ -1815,6 +2808,7 @@ void main() {
   els.size.value = 'fit';
   fitSize();
   placeLine();
+  renderSaved();
   render({ forceOrder: true });
   committed = serialize();
   els.undo.disabled = true;

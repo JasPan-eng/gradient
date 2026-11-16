@@ -42,6 +42,7 @@
       <div id="preview" class="preview">
         <canvas id="canvas" hidden></canvas>
         <canvas id="gl" hidden></canvas>
+        <canvas id="fx" hidden></canvas>
         <div id="grain" class="grain" hidden></div>
         <div id="overlay" class="overlay" hidden>
           <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
@@ -50,6 +51,14 @@
           </svg>
           <div id="hot-handles"></div>
         </div>
+        <div id="guide" class="guide" hidden>
+          <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+            <line id="guide-shadow" vector-effect="non-scaling-stroke"/>
+            <line id="guide-main" vector-effect="non-scaling-stroke"/>
+          </svg>
+          <div id="guide-dots"></div>
+        </div>
+        <div id="type-handle" class="type-handle" tabindex="0" role="button" aria-label="Text position. Drag, or use the arrow keys, to move it." hidden>T</div>
         <div class="hud" id="hud" aria-hidden="true"></div>
         <div class="canvas-tools">
           <button type="button" class="canvas-btn" id="canvas-play" aria-label="Play or pause the reaction" title="Play / pause (Space)" hidden>
@@ -118,9 +127,9 @@
         </div>
       </div>
       <div class="row">
-        <label class="label" for="grain-range">Grain</label>
-        <input type="range" id="grain-range" min="0" max="100" step="1">
-        <span class="num"><output id="grain-out"></output><i>%</i></span>
+        <label class="label" for="steps">Steps</label>
+        <input type="range" id="steps" min="1" max="24" step="1">
+        <span class="num"><output id="steps-out"></output></span>
       </div>
       <div class="row">
         <span class="label">Blend</span>
@@ -209,6 +218,130 @@
       <div id="stops" class="stops"></div>
       <h3>Presets</h3>
       <div id="presets" class="presets"></div>
+      <div class="sub-head">
+        <h3>Saved</h3>
+        <button type="button" class="btn ghost small" id="save">Save this one</button>
+      </div>
+      <div id="saved" class="presets"></div>
+      <p class="note" id="saved-note">Nothing saved yet. Saved gradients stay in this browser.</p>
+    </section>
+
+    <section class="card" id="fx-card">
+      <div class="card-head">
+        <h2>Effects</h2>
+        <button type="button" class="btn ghost small" id="fx-clear">Clear</button>
+      </div>
+      <div class="chips" id="looks" role="group" aria-label="Ready-made looks"></div>
+
+      <div class="row">
+        <label class="label" for="lut">Color grade</label>
+        <select id="lut"></select>
+      </div>
+      <div class="row" id="lut-mix-row">
+        <label class="label" for="lut-mix">Strength</label>
+        <input type="range" id="lut-mix" min="0" max="100" step="1">
+        <span class="num"><output id="lut-mix-out"></output><i>%</i></span>
+      </div>
+      <div class="row end lut-actions">
+        <input type="file" id="lut-file" accept=".cube" multiple hidden>
+        <button type="button" class="btn ghost small" id="lut-remove" hidden>Remove this LUT</button>
+        <button type="button" class="btn ghost small" id="lut-load">Load .cube LUTs</button>
+      </div>
+
+      <div class="row">
+        <label class="label" for="blur">Blur</label>
+        <select id="blur">
+          <option value="none">Off</option>
+          <option value="soft">Soft</option>
+          <option value="motion">Motion</option>
+          <option value="zoom">Zoom</option>
+          <option value="spin">Spin</option>
+        </select>
+      </div>
+      <div class="row" id="blur-amt-row">
+        <label class="label" for="blur-amt">Amount</label>
+        <input type="range" id="blur-amt" min="1" max="100" step="1">
+        <span class="num"><output id="blur-amt-out"></output><i>%</i></span>
+      </div>
+      <div class="row" id="blur-angle-row">
+        <label class="label" for="blur-angle">Direction</label>
+        <input type="range" id="blur-angle" min="0" max="180" step="1">
+        <span class="num"><output id="blur-angle-out"></output><i>°</i></span>
+      </div>
+
+      <div class="row">
+        <label class="label" for="half">Halftone</label>
+        <select id="half">
+          <option value="none">Off</option>
+          <option value="color">Color dots</option>
+          <option value="ink">Two inks</option>
+          <option value="cmyk">CMYK print</option>
+          <option value="lines">Lines</option>
+        </select>
+      </div>
+      <div class="row" id="half-size-row">
+        <label class="label" for="half-size">Dot size</label>
+        <input type="range" id="half-size" min="4" max="40" step="1">
+        <span class="num"><output id="half-size-out"></output></span>
+      </div>
+      <div class="row" id="half-angle-row">
+        <label class="label" for="half-angle">Screen angle</label>
+        <input type="range" id="half-angle" min="0" max="90" step="1">
+        <span class="num"><output id="half-angle-out"></output><i>°</i></span>
+      </div>
+
+      <div class="row">
+        <label class="label" for="print">Print texture</label>
+        <input type="range" id="print" min="0" max="100" step="1">
+        <span class="num"><output id="print-out"></output><i>%</i></span>
+      </div>
+      <div class="row">
+        <label class="label" for="grain-range">Grain</label>
+        <input type="range" id="grain-range" min="0" max="100" step="1">
+        <span class="num"><output id="grain-out"></output><i>%</i></span>
+      </div>
+      <p class="note">Color grade changes the gradient's colors, so it carries into the CSS and SVG. Blur, halftone, print texture, grain and type are in PNG and JPG downloads only. LUTs you load are read and kept in this browser, never uploaded.</p>
+    </section>
+
+    <section class="card" id="type-card">
+      <h2>Type</h2>
+      <textarea id="text" rows="2" spellcheck="false" placeholder="Write something" aria-label="Text on the canvas"></textarea>
+      <div id="text-rows">
+        <div class="row">
+          <label class="label" for="text-font">Font</label>
+          <select id="text-font"></select>
+        </div>
+        <div class="row">
+          <label class="label" for="text-size">Size</label>
+          <input type="range" id="text-size" min="2" max="40" step="0.5">
+          <span class="num"><output id="text-size-out"></output></span>
+        </div>
+        <div class="row">
+          <label class="label" for="text-spacing">Spacing</label>
+          <input type="range" id="text-spacing" min="-10" max="50" step="1">
+          <span class="num"><output id="text-spacing-out"></output></span>
+        </div>
+        <div class="row">
+          <label class="label" for="text-color">Color</label>
+          <input type="color" id="text-color" class="swatch" aria-label="Text color">
+          <select id="text-blend" aria-label="How the text mixes with the gradient">
+            <option value="normal">Solid</option>
+            <option value="overlay">Overlay</option>
+            <option value="soft-light">Soft light</option>
+            <option value="difference">Difference</option>
+            <option value="multiply">Multiply</option>
+            <option value="screen">Screen</option>
+          </select>
+        </div>
+        <div class="row">
+          <span class="label">Effects</span>
+          <div class="seg" id="text-under">
+            <label><input type="radio" name="text-under" value="0"><span>Stay crisp</span></label>
+            <label><input type="radio" name="text-under" value="1"><span>Affect type</span></label>
+          </div>
+        </div>
+        <p class="note">Drag the T on the canvas to move the text.</p>
+      </div>
     </section>
 
     <section class="card" id="image-card">
@@ -304,6 +437,9 @@
     <dt>Focus mode</dt><dd><kbd>F</kbd></dd>
     <dt>Play or pause the reaction</dt><dd><kbd>Space</kbd></dd>
     <dt>Copy the code</dt><dd><kbd>C</kbd></dd>
+    <dt>Save the gradient</dt><dd><kbd>S</kbd></dd>
+    <dt>Pick a stop's color</dt><dd>Double-click it</dd>
+    <dt>Remove a stop</dt><dd>Drag it off the bar</dd>
     <dt>Undo, redo</dt><dd><kbd>Ctrl</kbd> <kbd>Z</kbd>, <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>Z</kbd></dd>
     <dt>Nudge the selected handle</dt><dd><kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd></dd>
     <dt>Remove the selected handle</dt><dd><kbd>Delete</kbd></dd>

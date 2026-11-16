@@ -9,6 +9,9 @@ A small web tool for making gradients.
 - **Reaction:** a Gray-Scott reaction-diffusion simulation, after Karl Sims's tutorial, grown from the hotspots and colored by the gradient. It runs on the GPU (WebGL2) with a JavaScript fallback.
 - Pull a gradient out of an image: drop, paste or browse for one, then either drag a line across it or take its main colors. Images are read in the browser and never uploaded.
 - Export as CSS, SVG, JSON, PNG or JPG at any size, or copy a link that reopens the same gradient.
+- **Effects:** color grades (ten built in, or load your own `.cube` LUTs, which stay in your browser), blur (soft, motion, zoom, spin), halftone (color dots, two inks, CMYK, lines), print texture, and ready-made looks such as Riso and Newsprint.
+- **Type:** put text on the canvas, drag it into place, and blend it with the gradient.
+- **Steps** cuts the gradient into flat bands. Drag the dots on the canvas to move stops; drag a stop off the bar to remove it. Save gradients to reuse them later.
 - Presets, film grain (baked into PNG and JPG downloads), undo and redo, light and dark themes, a focus mode that hides the controls (`F`), and keyboard shortcuts (`?` lists them).
 - "Smooth" blending mixes colors in OKLab, which avoids the muddy middle that plain sRGB blending gives.
 
