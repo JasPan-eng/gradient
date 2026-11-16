@@ -68,8 +68,10 @@
   let uid = 1;
   const mkStop = (color, pos) => ({ id: uid++, color, pos: clamp(+(+pos).toFixed(1), 0, 100) });
 
-  const TYPES = ['linear', 'radial', 'conic'];
+  const TYPES = ['linear', 'radial', 'conic', 'shape', 'rd'];
+  const FIELD_TYPES = ['shape', 'rd']; // drawn on a canvas from a field of values, not by CSS
   const SPACES = ['oklab', 'srgb'];
+  const defaultHotspots = () => [{ x: 0.25, y: 0.62 }, { x: 0.5, y: 0.36 }, { x: 0.75, y: 0.62 }];
 
   const state = {
     type: 'linear',
@@ -79,8 +81,11 @@
     space: 'oklab',
     stops: [mkStop('#ffc56b', 0), mkStop('#f2617a', 50), mkStop('#5b3fd6', 100)],
     selected: null,
+    hot: { mode: 'points', pts: defaultHotspots(), spread: 60, soft: 45 },
+    rd: { f: 0.0545, k: 0.062, speed: 10, detail: 320 },
   };
   state.selected = state.stops[0].id;
+  const isField = () => FIELD_TYPES.includes(state.type);
 
   const byId = (id) => state.stops.find((s) => s.id === id);
   const sorted = () => [...state.stops].sort((a, b) => a.pos - b.pos || a.id - b.id);
@@ -135,6 +140,13 @@
   }
 
   function cssCode() {
+    if (isField()) {
+      return [
+        '/* Hotspot and reaction gradients cannot be written as a CSS gradient.',
+        '   Download a PNG or JPG below and use it as an image: */',
+        'background: url("gradient.png") center / cover;',
+      ].join('\n');
+    }
     const plain = sorted();
     if (state.space === 'srgb') return `background: ${cssGradient(plain)};`;
     return [
@@ -161,8 +173,8 @@
   }
 
   function svgCode(w, h) {
-    if (state.type === 'conic') {
-      return '<!-- SVG has no conic gradients. Download a PNG instead, or switch the type to linear or radial. -->';
+    if (state.type === 'conic' || isField()) {
+      return '<!-- SVG can only hold linear and radial gradients. Download a PNG instead, or switch the type. -->';
     }
     const g = geometry(w, h);
     const n = (v) => String(+v.toFixed(2));
@@ -184,16 +196,40 @@
   }
 
   function jsonCode() {
-    const out = { type: state.type };
-    if (state.type !== 'radial') out.angle = state.angle;
-    if (state.type !== 'linear') out.center = { x: state.cx, y: state.cy };
+    const out = { type: { shape: 'hotspots', rd: 'reaction-diffusion' }[state.type] || state.type };
+    if (state.type === 'linear' || state.type === 'conic') out.angle = state.angle;
+    if (state.type === 'radial' || state.type === 'conic') out.center = { x: state.cx, y: state.cy };
     out.interpolation = state.space;
     out.stops = sorted().map((s) => ({ color: s.color, position: s.pos }));
-    out.css = cssGradient(sorted(), state.space === 'oklab' ? 'oklab' : '');
+    if (isField()) {
+      out.hotspots = {
+        shape: state.hot.mode,
+        points: state.hot.pts.map((p) => ({ x: +(p.x * 100).toFixed(1), y: +(p.y * 100).toFixed(1) })),
+      };
+      if (state.type === 'shape') {
+        out.hotspots.spread = state.hot.spread;
+        if (state.hot.mode === 'points') out.hotspots.softness = state.hot.soft;
+      } else {
+        out.reaction = { model: 'gray-scott', feed: state.rd.f, kill: state.rd.k, diffusionA: 1, diffusionB: 0.5 };
+      }
+    } else {
+      out.css = cssGradient(sorted(), state.space === 'oklab' ? 'oklab' : '');
+    }
     return JSON.stringify(out, null, 2);
   }
 
   function paint(canvas, w, h) {
+    if (isField()) {
+      const lutNow = buildLut();
+      if (state.type === 'shape') {
+        const [fw, fh] = gridDims(Math.min(900, Math.max(w, h)));
+        drawField(canvas, shapeField(fw, fh), fw, fh, w, h, lutNow);
+      } else {
+        if (rdKey() !== rd.key) rdInit();
+        drawField(canvas, rdOutput(), rd.w, rd.h, w, h, lutNow);
+      }
+      return;
+    }
     canvas.width = w;
     canvas.height = h;
     const ctx = canvas.getContext('2d');
@@ -217,6 +253,14 @@
     centerRows: $('#center-rows'), cx: $('#cx'), cy: $('#cy'), cxOut: $('#cx-out'), cyOut: $('#cy-out'),
     list: $('#stops'), code: $('#code'), dlSvg: $('#dl-svg'),
     size: $('#size'), w: $('#w'), h: $('#h'), toast: $('#toast'),
+    canvas: $('#canvas'), gl: $('#gl'), overlay: $('#overlay'), hotHandles: $('#hot-handles'),
+    curves: [$('#curve-shadow'), $('#curve-main')],
+    hotCard: $('#hot-card'), rdCard: $('#rd-card'), hotNote: $('#hot-note'),
+    spreadRow: $('#spread-row'), softRow: $('#soft-row'),
+    spread: $('#spread'), soft: $('#soft'), spreadOut: $('#spread-out'), softOut: $('#soft-out'),
+    rdPreset: $('#rd-preset'), rdF: $('#rd-f'), rdK: $('#rd-k'), rdSpeed: $('#rd-speed'), rdDetail: $('#rd-detail'),
+    rdFOut: $('#rd-f-out'), rdKOut: $('#rd-k-out'), rdSpeedOut: $('#rd-speed-out'), rdDetailOut: $('#rd-detail-out'),
+    rdPlay: $('#rd-play'),
   };
 
   let toastTimer;
@@ -298,9 +342,39 @@
   function renderControls() {
     setRadio('type', state.type);
     setRadio('space', state.space);
-    els.angleRow.hidden = state.type === 'radial';
-    els.centerRows.hidden = state.type === 'linear';
+    const field = isField();
+    const isRd = state.type === 'rd';
+    els.angleRow.hidden = state.type === 'radial' || field;
+    els.centerRows.hidden = state.type === 'linear' || field;
     els.angleLabel.textContent = state.type === 'conic' ? 'Start' : 'Angle';
+
+    els.hotCard.hidden = !field;
+    els.rdCard.hidden = !isRd;
+    els.spreadRow.hidden = isRd;
+    els.softRow.hidden = isRd || state.hot.mode !== 'points';
+    setRadio('hot-mode', state.hot.mode);
+    setValue(els.spread, state.hot.spread);
+    setValue(els.soft, state.hot.soft);
+    els.spreadOut.textContent = state.hot.spread;
+    els.softOut.textContent = state.hot.soft;
+    els.hotNote.textContent =
+      (isRd
+        ? 'The reaction grows from these. Moving them restarts the growth. '
+        : 'The gradient starts at the hotspots and spreads outward. ') +
+      'Click the canvas to add a point, drag to move it, double-click to remove it.';
+
+    setValue(els.rdF, state.rd.f);
+    setValue(els.rdK, state.rd.k);
+    setValue(els.rdSpeed, state.rd.speed);
+    setValue(els.rdDetail, state.rd.detail);
+    els.rdFOut.textContent = state.rd.f.toFixed(4);
+    els.rdKOut.textContent = state.rd.k.toFixed(4);
+    els.rdSpeedOut.textContent = state.rd.speed;
+    els.rdDetailOut.textContent = state.rd.detail;
+    const preset = Object.keys(RD_PRESETS).find(
+      (name) => RD_PRESETS[name][0] === state.rd.f && RD_PRESETS[name][1] === state.rd.k);
+    els.rdPreset.value = preset || 'custom';
+    els.rdPlay.textContent = rd.playing ? 'Pause' : 'Play';
     setValue(els.angle, state.angle);
     setValue(els.angleNum, state.angle);
     setValue(els.cx, state.cx);
@@ -308,8 +382,11 @@
     els.cxOut.textContent = state.cx;
     els.cyOut.textContent = state.cy;
     els.hint.textContent =
-      (state.type === 'linear' ? 'Drag the preview to turn the gradient.' : 'Drag the preview to move the center.') +
-      ' Click the bar to add a stop.';
+      (field
+        ? 'Click the canvas to place hotspots.'
+        : state.type === 'linear'
+          ? 'Drag the canvas to turn the gradient.'
+          : 'Drag the canvas to move the center.') + ' Click the bar to add a color stop.';
   }
 
   function exportSize() {
@@ -329,13 +406,14 @@
 
   function renderCode() {
     els.code.textContent = currentCode();
-    els.dlSvg.disabled = state.type === 'conic';
-    els.dlSvg.title = state.type === 'conic' ? 'SVG has no conic gradients' : '';
+    const noSvg = state.type === 'conic' || isField();
+    els.dlSvg.disabled = noSvg;
+    els.dlSvg.title = noSvg ? 'SVG can only hold linear and radial gradients' : '';
   }
 
   function render(opts) {
     const res = resolved();
-    els.preview.style.background = cssGradient(res);
+    renderPreview(res);
     els.track.style.background = `linear-gradient(90deg, ${stopList(res)})`;
     renderHandles();
     renderList(opts && opts.forceOrder);
@@ -348,9 +426,17 @@
    * History, link sharing
    * ------------------------------------------------------------------ */
 
-  const serialize = () =>
-    `t=${state.type}&a=${fmt(state.angle)}&x=${fmt(state.cx)}&y=${fmt(state.cy)}&m=${state.space}` +
-    `&s=${sorted().map((s) => `${s.color.slice(1)}:${fmt(s.pos)}`).join(',')}`;
+  const serialize = () => {
+    let out =
+      `t=${state.type}&a=${fmt(state.angle)}&x=${fmt(state.cx)}&y=${fmt(state.cy)}&m=${state.space}` +
+      `&s=${sorted().map((s) => `${s.color.slice(1)}:${fmt(s.pos)}`).join(',')}`;
+    if (isField()) {
+      const pts = state.hot.pts.map((p) => `${Math.round(p.x * 1000)}-${Math.round(p.y * 1000)}`).join('_');
+      out += `&hm=${state.hot.mode}&p=${pts}&sp=${state.hot.spread}&so=${state.hot.soft}`;
+    }
+    if (state.type === 'rd') out += `&f=${state.rd.f}&k=${state.rd.k}&v=${state.rd.speed}&d=${state.rd.detail}`;
+    return out;
+  };
 
   function deserialize(str) {
     const p = new URLSearchParams(str);
@@ -375,6 +461,23 @@
     state.cy = num('y', 0, 100, 50);
     state.stops = stops.slice(0, 32);
     state.selected = sorted()[0].id;
+
+    if (p.has('p')) {
+      const pts = p.get('p').split('_').map((pair) => {
+        const [x, y] = pair.split('-').map(Number);
+        return Number.isFinite(x) && Number.isFinite(y) ? { x: clamp(x / 1000, 0, 1), y: clamp(y / 1000, 0, 1) } : null;
+      }).filter(Boolean).slice(0, 12);
+      if (pts.length) state.hot.pts = pts;
+      state.hot.mode = p.get('hm') === 'curve' ? 'curve' : 'points';
+      state.hot.spread = Math.round(num('sp', 5, 150, 60));
+      state.hot.soft = Math.round(num('so', 0, 100, 45));
+    }
+    if (p.has('f')) {
+      state.rd.f = num('f', 0.01, 0.1, 0.0545);
+      state.rd.k = num('k', 0.045, 0.07, 0.062);
+      state.rd.speed = Math.round(num('v', 1, 30, 10));
+      state.rd.detail = clamp(Math.round(num('d', 160, 480, 320) / 40) * 40, 160, 480);
+    }
     return true;
   }
 
@@ -565,6 +668,7 @@
   els.preview.addEventListener('pointerdown', (e) => {
     if (e.button) return;
     e.preventDefault();
+    if (isField()) return hotPointer(e);
     const apply = (ev) => {
       const r = els.preview.getBoundingClientRect();
       if (state.type === 'linear') {
@@ -658,24 +762,43 @@
 
   els.size.addEventListener('change', () => {
     if (els.size.value === 'custom') return;
-    const [w, h] = els.size.value.split('x');
-    els.w.value = w;
-    els.h.value = h;
-    renderCode();
+    if (els.size.value === 'fit') fitSize();
+    else [els.w.value, els.h.value] = els.size.value.split('x');
+    render();
   });
   for (const el of [els.w, els.h]) {
     el.addEventListener('input', () => {
       const match = [...els.size.options].find((o) => o.value === `${+els.w.value}x${+els.h.value}`);
       els.size.value = match ? match.value : 'custom';
-      renderCode();
+      render();
     });
     el.addEventListener('change', () => {
       const s = exportSize();
       els.w.value = s.w;
       els.h.value = s.h;
-      renderCode();
+      render();
     });
   }
+
+  /** "Fit window": the canvas fills the space it has, at screen resolution. */
+  function fitSize() {
+    const area = $('.canvas-area');
+    if (!area.clientWidth || !area.clientHeight) return; // page not laid out yet (hidden tab)
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    els.w.value = clamp(Math.round(area.clientWidth * dpr), 1, 8192);
+    els.h.value = clamp(Math.round(area.clientHeight * dpr), 1, 8192);
+  }
+
+  let fitTimer;
+  new ResizeObserver(() => {
+    if (els.size.value !== 'fit') return;
+    clearTimeout(fitTimer);
+    fitTimer = setTimeout(() => {
+      const before = `${els.w.value}x${els.h.value}`;
+      fitSize();
+      if (before !== `${els.w.value}x${els.h.value}`) render();
+    }, 150);
+  }).observe($('.canvas-area'));
 
   function download(blob, name) {
     const url = URL.createObjectURL(blob);
@@ -918,6 +1041,599 @@
   });
 
   /* ------------------------------------------------------------------ *
+   * Field gradients: hotspots and reaction-diffusion
+   *
+   * Both make a grid of values from 0 to 1 (a "field") and color it
+   * through the gradient. Hotspots: distance from points or a curve.
+   * Reaction: a Gray-Scott simulation seeded at the hotspots.
+   * ------------------------------------------------------------------ */
+
+  let lut = null;
+
+  /** 1024-step color ramp built from the stops. */
+  function buildLut() {
+    const s = sorted();
+    const ok = state.space === 'oklab';
+    const cols = s.map((st) => (ok ? rgbToOklab(hexToRgb(st.color)) : hexToRgb(st.color)));
+    const out = new Uint8ClampedArray(1024 * 3);
+    let j = 0;
+    for (let i = 0; i < 1024; i++) {
+      const p = (i / 1023) * 100;
+      while (j < s.length - 2 && p > s[j + 1].pos) j++;
+      const a = s[j], b = s[j + 1];
+      const t = b.pos === a.pos ? (p >= b.pos ? 1 : 0) : clamp((p - a.pos) / (b.pos - a.pos), 0, 1);
+      const c = cols[j].map((v, n) => v + (cols[j + 1][n] - v) * t);
+      const rgb = ok ? oklabToRgb(c) : c;
+      out[i * 3] = rgb[0]; out[i * 3 + 1] = rgb[1]; out[i * 3 + 2] = rgb[2];
+    }
+    return out;
+  }
+
+  /** Grid size with the export's proportions and the given long side. */
+  function gridDims(long) {
+    const { w, h } = exportSize();
+    return w >= h
+      ? [long, Math.max(4, Math.round((long * h) / w))]
+      : [Math.max(4, Math.round((long * w) / h)), long];
+  }
+
+  /** Smooth curve through the points, as cubic Bezier segments [p1, c1, c2, p2]. */
+  function bezierSegs(P) {
+    const segs = [];
+    for (let i = 0; i < P.length - 1; i++) {
+      const p0 = P[Math.max(0, i - 1)], p1 = P[i], p2 = P[i + 1], p3 = P[Math.min(P.length - 1, i + 2)];
+      segs.push([
+        p1,
+        [p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6],
+        [p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6],
+        p2,
+      ]);
+    }
+    return segs;
+  }
+
+  /** The curve flattened to a polyline, in grid pixels. */
+  function curvePoly(pts, sx, sy) {
+    const out = [];
+    for (const [p1, c1, c2, p2] of bezierSegs(pts.map((p) => [p.x * sx, p.y * sy]))) {
+      for (let k = 0; k < 14; k++) {
+        const t = k / 14, u = 1 - t;
+        out.push([
+          u * u * u * p1[0] + 3 * u * u * t * c1[0] + 3 * u * t * t * c2[0] + t * t * t * p2[0],
+          u * u * u * p1[1] + 3 * u * u * t * c1[1] + 3 * u * t * t * c2[1] + t * t * t * p2[1],
+        ]);
+      }
+    }
+    const last = pts[pts.length - 1];
+    out.push([last.x * sx, last.y * sy]);
+    return out;
+  }
+
+  /** Distance from the hotspots, 0 on them and 1 at the edge of the spread. */
+  function shapeField(fw, fh) {
+    const out = new Float32Array(fw * fh);
+    const { mode, pts, spread, soft } = state.hot;
+    const maxDim = Math.max(fw, fh);
+    const reach = Math.max(1e-6, (spread / 100) * maxDim);
+
+    if (mode === 'curve' && pts.length > 1) {
+      const poly = curvePoly(pts, fw, fh);
+      const n = poly.length - 1;
+      const ax = new Float32Array(n), ay = new Float32Array(n);
+      const dx = new Float32Array(n), dy = new Float32Array(n), inv = new Float32Array(n);
+      for (let i = 0; i < n; i++) {
+        ax[i] = poly[i][0]; ay[i] = poly[i][1];
+        dx[i] = poly[i + 1][0] - ax[i]; dy[i] = poly[i + 1][1] - ay[i];
+        inv[i] = 1 / Math.max(1e-9, dx[i] * dx[i] + dy[i] * dy[i]);
+      }
+      for (let y = 0, o = 0; y < fh; y++) {
+        for (let x = 0; x < fw; x++, o++) {
+          const px = x + 0.5, py = y + 0.5;
+          let best = Infinity;
+          for (let i = 0; i < n; i++) {
+            const rx = px - ax[i], ry = py - ay[i];
+            let t = (rx * dx[i] + ry * dy[i]) * inv[i];
+            t = t < 0 ? 0 : t > 1 ? 1 : t;
+            const ex = rx - dx[i] * t, ey = ry - dy[i] * t;
+            const d2 = ex * ex + ey * ey;
+            if (d2 < best) best = d2;
+          }
+          out[o] = Math.min(1, Math.sqrt(best) / reach);
+        }
+      }
+      return out;
+    }
+
+    // Points. Softness melts neighbouring hotspots into each other (a smooth minimum).
+    const n = pts.length;
+    const qx = pts.map((p) => p.x * fw), qy = pts.map((p) => p.y * fh);
+    const melt = (soft / 100) * 0.22 * maxDim;
+    for (let y = 0, o = 0; y < fh; y++) {
+      for (let x = 0; x < fw; x++, o++) {
+        const px = x + 0.5, py = y + 0.5;
+        let best = Infinity, sum = 0;
+        for (let i = 0; i < n; i++) {
+          const d = Math.hypot(px - qx[i], py - qy[i]);
+          if (d < best) best = d;
+          if (melt > 0) sum += Math.exp(-d / melt);
+        }
+        const d = melt > 0 && sum > 0 ? Math.max(0, -melt * Math.log(sum)) : best;
+        out[o] = Math.min(1, d / reach);
+      }
+    }
+    return out;
+  }
+
+  /** Color a field into a canvas of any size (bicubic when the sizes differ). */
+  function drawField(canvas, field, fw, fh, W, H, ramp) {
+    canvas.width = W;
+    canvas.height = H;
+    const ctx = canvas.getContext('2d');
+    const im = ctx.createImageData(W, H);
+    const d = im.data;
+    const put = (o, v) => {
+      const i = ((v <= 0 ? 0 : v >= 1 ? 1 : v) * 1023 + 0.5 | 0) * 3;
+      d[o] = ramp[i]; d[o + 1] = ramp[i + 1]; d[o + 2] = ramp[i + 2]; d[o + 3] = 255;
+    };
+    if (W === fw && H === fh) {
+      for (let i = 0, o = 0; i < field.length; i++, o += 4) put(o, field[i]);
+    } else {
+      const taps = (outN, srcN, stride) => {
+        const idx = new Int32Array(outN * 4), wt = new Float32Array(outN * 4);
+        for (let i = 0; i < outN; i++) {
+          const s = ((i + 0.5) * srcN) / outN - 0.5;
+          const i0 = Math.floor(s), t = s - i0, t2 = t * t, t3 = t2 * t;
+          const w = [(-t3 + 2 * t2 - t) / 2, (3 * t3 - 5 * t2 + 2) / 2, (-3 * t3 + 4 * t2 + t) / 2, (t3 - t2) / 2];
+          for (let k = 0; k < 4; k++) {
+            idx[i * 4 + k] = clamp(i0 - 1 + k, 0, srcN - 1) * stride;
+            wt[i * 4 + k] = w[k];
+          }
+        }
+        return [idx, wt];
+      };
+      const [xi, xw] = taps(W, fw, 1);
+      const [yi, yw] = taps(H, fh, fw);
+      for (let y = 0, o = 0; y < H; y++) {
+        const y4 = y * 4;
+        for (let x = 0; x < W; x++, o += 4) {
+          const x4 = x * 4;
+          let v = 0;
+          for (let k = 0; k < 4; k++) {
+            const r = yi[y4 + k];
+            v += yw[y4 + k] * (
+              xw[x4] * field[r + xi[x4]] + xw[x4 + 1] * field[r + xi[x4 + 1]] +
+              xw[x4 + 2] * field[r + xi[x4 + 2]] + xw[x4 + 3] * field[r + xi[x4 + 3]]);
+          }
+          put(o, v);
+        }
+      }
+    }
+    ctx.putImageData(im, 0, 0);
+  }
+
+  /* ---------- reaction-diffusion (Gray-Scott, as in Karl Sims's tutorial) ---------- */
+
+  // [feed, kill]
+  const RD_PRESETS = {
+    coral: [0.0545, 0.062],
+    mitosis: [0.0367, 0.0649],
+    spots: [0.03, 0.062],
+    maze: [0.029, 0.057],
+    holes: [0.039, 0.058],
+    worms: [0.078, 0.061],
+    waves: [0.014, 0.045],
+  };
+
+  const rd = {
+    w: 0, h: 0, A: null, B: null, A2: null, B2: null, out: null, key: '', raf: 0, gpu: undefined,
+    playing: !window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+  };
+
+  const hotKey = () =>
+    `${state.hot.mode}|${state.hot.pts.map((p) => `${Math.round(p.x * 1000)},${Math.round(p.y * 1000)}`).join(';')}`;
+  const rdKey = () => `${gridDims(state.rd.detail).join('x')}|${hotKey()}`;
+
+  /* The simulation runs on the GPU (WebGL2) when it can, and in plain
+     JavaScript on a smaller budget when it cannot. Same equations either way. */
+
+  const GL_VERT = `#version 300 es
+in vec2 p;
+out vec2 v;
+void main() { v = p * 0.5 + 0.5; gl_Position = vec4(p, 0.0, 1.0); }`;
+
+  const GL_SIM = `#version 300 es
+precision highp float;
+uniform sampler2D s;
+uniform vec2 px;
+uniform float f;
+uniform float k;
+in vec2 v;
+out vec4 o;
+void main() {
+  vec2 c = texture(s, v).rg;
+  vec2 lap =
+    (texture(s, v + vec2(px.x, 0.0)).rg + texture(s, v - vec2(px.x, 0.0)).rg +
+     texture(s, v + vec2(0.0, px.y)).rg + texture(s, v - vec2(0.0, px.y)).rg) * 0.2 +
+    (texture(s, v + px).rg + texture(s, v - px).rg +
+     texture(s, v + vec2(px.x, -px.y)).rg + texture(s, v + vec2(-px.x, px.y)).rg) * 0.05 - c;
+  float abb = c.r * c.g * c.g;
+  o = vec4(c.r + lap.r - abb + f * (1.0 - c.r), c.g + 0.5 * lap.g + abb - (k + f) * c.g, 0.0, 1.0);
+}`;
+
+  // Smooth (bicubic) upscale of the grid, then color through the ramp.
+  const GL_SHOW = `#version 300 es
+precision highp float;
+uniform sampler2D s;
+uniform sampler2D ramp;
+uniform vec2 res;
+in vec2 v;
+out vec4 o;
+vec2 field(vec2 uv) {
+  vec2 st = uv * res - 0.5;
+  vec2 i = floor(st);
+  vec2 t = st - i;
+  vec2 w0 = (1.0 - t) * (1.0 - t) * (1.0 - t) / 6.0;
+  vec2 w1 = (4.0 - 6.0 * t * t + 3.0 * t * t * t) / 6.0;
+  vec2 w2 = (1.0 + 3.0 * t + 3.0 * t * t - 3.0 * t * t * t) / 6.0;
+  vec2 w3 = t * t * t / 6.0;
+  vec2 g0 = w0 + w1;
+  vec2 g1 = w2 + w3;
+  vec2 h0 = (i - 0.5 + w1 / g0) / res;
+  vec2 h1 = (i + 1.5 + w3 / g1) / res;
+  return g0.y * (g0.x * texture(s, vec2(h0.x, h0.y)).rg + g1.x * texture(s, vec2(h1.x, h0.y)).rg) +
+         g1.y * (g0.x * texture(s, vec2(h0.x, h1.y)).rg + g1.x * texture(s, vec2(h1.x, h1.y)).rg);
+}
+void main() {
+  vec2 c = field(vec2(v.x, 1.0 - v.y));
+  float t = clamp(1.0 - c.r + c.g, 0.0, 1.0);
+  o = vec4(texture(ramp, vec2(t * (1023.0 / 1024.0) + 0.5 / 1024.0, 0.5)).rgb, 1.0);
+}`;
+
+  function gpuInit() {
+    if (rd.gpu !== undefined) return rd.gpu;
+    rd.gpu = null;
+    try {
+      const gl = els.gl.getContext('webgl2', { antialias: false, alpha: false, depth: false, preserveDrawingBuffer: true });
+      if (!gl || !gl.getExtension('EXT_color_buffer_float')) return null;
+      const compile = (type, src) => {
+        const sh = gl.createShader(type);
+        gl.shaderSource(sh, src);
+        gl.compileShader(sh);
+        if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh));
+        return sh;
+      };
+      const program = (frag) => {
+        const pr = gl.createProgram();
+        gl.attachShader(pr, compile(gl.VERTEX_SHADER, GL_VERT));
+        gl.attachShader(pr, compile(gl.FRAGMENT_SHADER, frag));
+        gl.bindAttribLocation(pr, 0, 'p');
+        gl.linkProgram(pr);
+        if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(pr));
+        const u = {};
+        for (const name of ['s', 'ramp', 'px', 'res', 'f', 'k']) u[name] = gl.getUniformLocation(pr, name);
+        return { pr, u };
+      };
+      const texture = (wrap) => {
+        const t = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, t);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, wrap);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, wrap);
+        return t;
+      };
+      const sim = program(GL_SIM), show = program(GL_SHOW);
+      gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+      gl.enableVertexAttribArray(0);
+      gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+      rd.gpu = {
+        gl, sim, show, cur: 0,
+        tex: [texture(gl.REPEAT), texture(gl.REPEAT)],
+        fbo: [gl.createFramebuffer(), gl.createFramebuffer()],
+        ramp: texture(gl.CLAMP_TO_EDGE),
+      };
+      els.gl.addEventListener('webglcontextlost', (e) => {
+        e.preventDefault();
+        rd.gpu = null;   // carry on in JavaScript
+        rd.key = '';
+        render();
+      });
+    } catch (err) {
+      rd.gpu = null;
+    }
+    return rd.gpu;
+  }
+
+  /** Send the freshly seeded grid to the GPU. */
+  function gpuUpload() {
+    const g = gpuInit();
+    if (!g) return;
+    const { gl } = g, { w, h } = rd;
+    const data = new Float32Array(w * h * 4);
+    for (let i = 0; i < w * h; i++) { data[i * 4] = rd.A[i]; data[i * 4 + 1] = rd.B[i]; data[i * 4 + 3] = 1; }
+    for (const j of [0, 1]) {
+      gl.bindTexture(gl.TEXTURE_2D, g.tex[j]);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.FLOAT, j === 0 ? data : null);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, g.fbo[j]);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, g.tex[j], 0);
+      if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) { rd.gpu = null; return; }
+    }
+    g.cur = 0;
+  }
+
+  function gpuStep(n) {
+    const g = rd.gpu, { gl } = g;
+    gl.useProgram(g.sim.pr);
+    gl.viewport(0, 0, rd.w, rd.h);
+    gl.uniform1i(g.sim.u.s, 0);
+    gl.uniform2f(g.sim.u.px, 1 / rd.w, 1 / rd.h);
+    gl.uniform1f(g.sim.u.f, state.rd.f);
+    gl.uniform1f(g.sim.u.k, state.rd.k);
+    gl.activeTexture(gl.TEXTURE0);
+    for (let i = 0; i < n; i++) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, g.fbo[1 - g.cur]);
+      gl.bindTexture(gl.TEXTURE_2D, g.tex[g.cur]);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      g.cur = 1 - g.cur;
+    }
+  }
+
+  function gpuShow() {
+    const g = rd.gpu, { gl } = g;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const cw = clamp(Math.round(els.preview.clientWidth * dpr), 16, 2400);
+    const ch = clamp(Math.round(els.preview.clientHeight * dpr), 16, 2400);
+    if (els.gl.width !== cw || els.gl.height !== ch) { els.gl.width = cw; els.gl.height = ch; }
+    const rgba = new Uint8Array(1024 * 4);
+    for (let i = 0; i < 1024; i++) {
+      rgba[i * 4] = lut[i * 3]; rgba[i * 4 + 1] = lut[i * 3 + 1]; rgba[i * 4 + 2] = lut[i * 3 + 2]; rgba[i * 4 + 3] = 255;
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, cw, ch);
+    gl.useProgram(g.show.pr);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, g.ramp);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1024, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, g.tex[g.cur]);
+    gl.uniform1i(g.show.u.s, 0);
+    gl.uniform1i(g.show.u.ramp, 1);
+    gl.uniform2f(g.show.u.res, rd.w, rd.h);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  /** Read the grid back from the GPU, for export. */
+  function gpuRead() {
+    const g = rd.gpu, { gl } = g;
+    const buf = new Float32Array(rd.w * rd.h * 4);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, g.fbo[g.cur]);
+    gl.readPixels(0, 0, rd.w, rd.h, gl.RGBA, gl.FLOAT, buf);
+    for (let i = 0; i < rd.out.length; i++) rd.out[i] = 1 - buf[i * 4] + buf[i * 4 + 1];
+    return rd.out;
+  }
+
+  /** Start over: chemical A everywhere, chemical B only on the hotspots. */
+  function rdInit() {
+    const [w, h] = gridDims(state.rd.detail);
+    const n = w * h;
+    rd.w = w; rd.h = h;
+    rd.A = new Float32Array(n).fill(1);
+    rd.B = new Float32Array(n);
+    rd.A2 = new Float32Array(n);
+    rd.B2 = new Float32Array(n);
+    rd.out = new Float32Array(n);
+    const stamp = (cx, cy, r) => {
+      for (let y = Math.floor(cy - r); y <= Math.ceil(cy + r); y++) {
+        for (let x = Math.floor(cx - r); x <= Math.ceil(cx + r); x++) {
+          if ((x - cx) ** 2 + (y - cy) ** 2 > r * r) continue;
+          rd.B[(((y % h) + h) % h) * w + (((x % w) + w) % w)] = 1;
+        }
+      }
+    };
+    const { mode, pts } = state.hot;
+    if (mode === 'curve' && pts.length > 1) {
+      const poly = curvePoly(pts, w, h);
+      for (let i = 0; i < poly.length - 1; i++) {
+        const [x1, y1] = poly[i], [x2, y2] = poly[i + 1];
+        const steps = Math.max(1, Math.ceil(Math.hypot(x2 - x1, y2 - y1)));
+        for (let s = 0; s <= steps; s++) stamp(x1 + ((x2 - x1) * s) / steps, y1 + ((y2 - y1) * s) / steps, 2.5);
+      }
+    } else {
+      for (const p of pts) stamp(p.x * w, p.y * h, 5);
+    }
+    gpuUpload();
+    rd.key = rdKey();
+  }
+
+  /** n steps of the two equations. The grid wraps, so the result tiles. */
+  function rdStep(n) {
+    if (rd.gpu) return gpuStep(n);
+    const w = rd.w, h = rd.h, f = state.rd.f, kf = state.rd.k + state.rd.f;
+    let A = rd.A, B = rd.B, A2 = rd.A2, B2 = rd.B2;
+    for (let it = 0; it < n; it++) {
+      for (let y = 0; y < h; y++) {
+        const r = y * w, u = (y === 0 ? h - 1 : y - 1) * w, dn = (y === h - 1 ? 0 : y + 1) * w;
+        for (let x = 0; x < w; x++) {
+          const l = x === 0 ? w - 1 : x - 1, rt = x === w - 1 ? 0 : x + 1;
+          const i = r + x, a = A[i], b = B[i];
+          const la = (A[r + l] + A[r + rt] + A[u + x] + A[dn + x]) * 0.2 +
+            (A[u + l] + A[u + rt] + A[dn + l] + A[dn + rt]) * 0.05 - a;
+          const lb = (B[r + l] + B[r + rt] + B[u + x] + B[dn + x]) * 0.2 +
+            (B[u + l] + B[u + rt] + B[dn + l] + B[dn + rt]) * 0.05 - b;
+          const abb = a * b * b;
+          A2[i] = a + la - abb + f * (1 - a);
+          B2[i] = b + 0.5 * lb + abb - kf * b;
+        }
+      }
+      let t = A; A = A2; A2 = t;
+      t = B; B = B2; B2 = t;
+    }
+    rd.A = A; rd.B = B; rd.A2 = A2; rd.B2 = B2;
+  }
+
+  function rdOutput() {
+    if (rd.gpu) return gpuRead();
+    const { A, B, out } = rd;
+    for (let i = 0; i < out.length; i++) out[i] = 1 - A[i] + B[i];
+    return out;
+  }
+
+  function rdDraw() {
+    if (rd.gpu) return gpuShow();
+    const scale = Math.max(rd.w, rd.h) * 2 <= 960 ? 2 : 1;
+    drawField(els.canvas, rdOutput(), rd.w, rd.h, rd.w * scale, rd.h * scale, lut);
+  }
+
+  function rdFrame() {
+    rd.raf = 0;
+    if (state.type !== 'rd' || !rd.playing) return;
+    rdStep(state.rd.speed);
+    rdDraw();
+    rd.raf = requestAnimationFrame(rdFrame);
+  }
+
+  /* ---------- preview ---------- */
+
+  const shapeCache = { key: '', field: null, fw: 0, fh: 0 };
+
+  function renderPreview(res) {
+    const field = isField();
+    const { w, h } = exportSize();
+    els.preview.style.setProperty('--ar', (w / h).toFixed(5));
+    els.overlay.hidden = !field;
+    if (!field) els.canvas.hidden = els.gl.hidden = true;
+    if (!field) {
+      els.preview.style.background = cssGradient(res);
+      return;
+    }
+    els.preview.style.background = 'none';
+    lut = buildLut();
+    if (state.type === 'shape') {
+      const [fw, fh] = gridDims(360);
+      const key = `${fw}x${fh}|${hotKey()}|${state.hot.spread}|${state.hot.soft}`;
+      if (key !== shapeCache.key) Object.assign(shapeCache, { key, fw, fh, field: shapeField(fw, fh) });
+      drawField(els.canvas, shapeCache.field, fw, fh, fw, fh, lut);
+      els.canvas.hidden = false;
+      els.gl.hidden = true;
+    } else {
+      if (rdKey() !== rd.key) rdInit();
+      els.gl.hidden = !rd.gpu;
+      els.canvas.hidden = !!rd.gpu;
+      if (rd.playing) { if (!rd.raf) rd.raf = requestAnimationFrame(rdFrame); }
+      else rdDraw();
+    }
+    renderOverlay();
+  }
+
+  /* ---------- hotspot handles on the canvas ---------- */
+
+  const hotEls = [];
+  let hotSel = -1;
+
+  function renderOverlay() {
+    const pts = state.hot.pts;
+    while (hotEls.length > pts.length) hotEls.pop().remove();
+    while (hotEls.length < pts.length) {
+      const el = document.createElement('div');
+      el.className = 'hot';
+      el.tabIndex = 0;
+      el.setAttribute('role', 'button');
+      els.hotHandles.append(el);
+      hotEls.push(el);
+    }
+    pts.forEach((p, i) => {
+      const el = hotEls[i];
+      el.dataset.i = i;
+      el.style.left = p.x * 100 + '%';
+      el.style.top = p.y * 100 + '%';
+      el.classList.toggle('is-selected', i === hotSel);
+      el.setAttribute('aria-label', `Hotspot ${i + 1} of ${pts.length}. Arrow keys move it, Delete removes it.`);
+    });
+    const xy = (p) => `${p[0].toFixed(2)},${p[1].toFixed(2)}`;
+    const d = state.hot.mode === 'curve' && pts.length > 1
+      ? bezierSegs(pts.map((p) => [p.x * 100, p.y * 100]))
+        .map((s, i) => `${i ? '' : 'M' + xy(s[0])}C${xy(s[1])} ${xy(s[2])} ${xy(s[3])}`).join('')
+      : '';
+    for (const path of els.curves) path.setAttribute('d', d);
+  }
+
+  function hotPointer(e) {
+    const where = (ev) => {
+      const r = els.preview.getBoundingClientRect();
+      return { x: clamp((ev.clientX - r.left) / r.width, 0, 1), y: clamp((ev.clientY - r.top) / r.height, 0, 1) };
+    };
+    const h = e.target.closest('.hot');
+    let i;
+    if (h) i = +h.dataset.i;
+    else {
+      if (state.hot.pts.length >= 12) return toast('Twelve hotspots is the limit');
+      state.hot.pts.push(where(e));
+      i = state.hot.pts.length - 1;
+    }
+    hotSel = i;
+    render();
+    hotEls[i].focus();
+    const pt = state.hot.pts[i];
+    drag((ev) => { Object.assign(pt, where(ev)); render(); });
+  }
+
+  function removeHotspot(i) {
+    if (state.hot.pts.length <= 1) return toast('Keep at least one hotspot');
+    state.hot.pts.splice(i, 1);
+    hotSel = Math.min(i, state.hot.pts.length - 1);
+    render();
+    hotEls[hotSel].focus();
+  }
+
+  els.hotHandles.addEventListener('dblclick', (e) => {
+    const h = e.target.closest('.hot');
+    if (h) removeHotspot(+h.dataset.i);
+  });
+
+  els.hotHandles.addEventListener('focusin', (e) => {
+    const h = e.target.closest('.hot');
+    if (h && hotSel !== +h.dataset.i) { hotSel = +h.dataset.i; renderOverlay(); }
+  });
+
+  els.hotHandles.addEventListener('keydown', (e) => {
+    const h = e.target.closest('.hot');
+    if (!h) return;
+    const i = +h.dataset.i, pt = state.hot.pts[i];
+    const step = e.shiftKey ? 0.1 : 0.01;
+    const d = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
+    if (d) {
+      e.preventDefault();
+      pt.x = clamp(pt.x + d[0], 0, 1);
+      pt.y = clamp(pt.y + d[1], 0, 1);
+      render();
+    } else if (e.key === 'Delete' || e.key === 'Backspace') {
+      e.preventDefault();
+      removeHotspot(i);
+    }
+  });
+
+  /* ---------- hotspot and reaction controls ---------- */
+
+  $('#hot-mode').addEventListener('change', () => { state.hot.mode = radio('hot-mode'); render(); });
+  els.spread.addEventListener('input', () => { state.hot.spread = +els.spread.value; render(); });
+  els.soft.addEventListener('input', () => { state.hot.soft = +els.soft.value; render(); });
+  $('#hot-reset').addEventListener('click', () => { state.hot.pts = defaultHotspots(); hotSel = -1; render(); });
+
+  els.rdPreset.addEventListener('change', () => {
+    const preset = RD_PRESETS[els.rdPreset.value];
+    if (!preset) return;
+    [state.rd.f, state.rd.k] = preset;
+    render();
+  });
+  els.rdF.addEventListener('input', () => { state.rd.f = +els.rdF.value; render(); });
+  els.rdK.addEventListener('input', () => { state.rd.k = +els.rdK.value; render(); });
+  els.rdSpeed.addEventListener('input', () => { state.rd.speed = +els.rdSpeed.value; render(); });
+  els.rdDetail.addEventListener('input', () => { state.rd.detail = +els.rdDetail.value; render(); });
+  els.rdPlay.addEventListener('click', () => { rd.playing = !rd.playing; render(); });
+  $('#rd-restart').addEventListener('click', () => { rdInit(); render(); });
+
+  /* ------------------------------------------------------------------ *
    * Start
    * ------------------------------------------------------------------ */
 
@@ -926,6 +1642,8 @@
     if (location.hash.slice(1) !== serialize() && deserialize(location.hash.slice(1))) render({ forceOrder: true });
   });
 
+  els.size.value = 'fit';
+  fitSize();
   placeLine();
   render({ forceOrder: true });
   committed = serialize();

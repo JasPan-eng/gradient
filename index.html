@@ -4,44 +4,60 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Gradient</title>
-<meta name="description" content="Make gradients, pull them out of images, and export them as CSS, SVG, PNG, JPG or JSON.">
+<meta name="description" content="Make gradients, grow them with reaction-diffusion, pull them out of images, and export them as CSS, SVG, PNG, JPG or JSON.">
 <meta property="og:title" content="Gradient">
-<meta property="og:description" content="Make gradients, pull them out of images, and export them.">
+<meta property="og:description" content="Make gradients, grow them with reaction-diffusion, pull them out of images, and export them.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%23ffc56b'/%3E%3Cstop offset='.5' stop-color='%23f2617a'/%3E%3Cstop offset='1' stop-color='%235b3fd6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='8' fill='url(%23g)'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-<header class="top">
-  <h1 class="wordmark">Gradient</h1>
-  <div class="top-actions">
-    <button type="button" class="btn ghost" id="undo" title="Undo (Ctrl+Z)">Undo</button>
-    <button type="button" class="btn ghost" id="random">Random</button>
-    <button type="button" class="btn ghost" id="reverse">Reverse</button>
-    <button type="button" class="btn" id="share">Copy link</button>
-  </div>
-</header>
+<a class="skip" href="#panel">Skip to controls</a>
 
 <main class="layout">
 
-  <section class="stage" aria-label="Gradient preview">
-    <div id="preview" class="preview"></div>
+  <header class="brand">
+    <h1 class="wordmark">Gradient</h1>
+    <div class="top-actions">
+      <button type="button" class="btn ghost small" id="undo" title="Undo (Ctrl+Z)">Undo</button>
+      <button type="button" class="btn ghost small" id="random">Random</button>
+      <button type="button" class="btn ghost small" id="reverse">Reverse</button>
+      <button type="button" class="btn small" id="share">Copy link</button>
+    </div>
+  </header>
+
+  <section class="stage" aria-label="Gradient canvas">
+    <div class="canvas-area">
+      <div id="preview" class="preview">
+        <canvas id="canvas" hidden></canvas>
+        <canvas id="gl" hidden></canvas>
+        <div id="overlay" class="overlay" hidden>
+          <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+            <path id="curve-shadow" vector-effect="non-scaling-stroke"/>
+            <path id="curve-main" vector-effect="non-scaling-stroke"/>
+          </svg>
+          <div id="hot-handles"></div>
+        </div>
+      </div>
+    </div>
     <div class="track-wrap">
       <div id="track" class="track"><div id="handles"></div></div>
     </div>
     <p class="hint" id="hint"></p>
   </section>
 
-  <aside class="panel">
+  <aside class="panel" id="panel" tabindex="-1">
 
     <section class="card">
       <h2>Gradient</h2>
-      <div class="row">
+      <div class="row top">
         <span class="label">Type</span>
-        <div class="seg" id="type">
+        <div class="seg wrap" id="type">
           <label><input type="radio" name="type" value="linear"><span>Linear</span></label>
           <label><input type="radio" name="type" value="radial"><span>Radial</span></label>
           <label><input type="radio" name="type" value="conic"><span>Conic</span></label>
+          <label><input type="radio" name="type" value="shape"><span>Hotspots</span></label>
+          <label><input type="radio" name="type" value="rd"><span>Reaction</span></label>
         </div>
       </div>
       <div class="row" id="angle-row">
@@ -69,6 +85,75 @@
         </div>
       </div>
       <p class="note">Smooth blends in OKLab, which avoids the grey, muddy middle you get between some colors. Classic is plain sRGB.</p>
+    </section>
+
+    <section class="card" id="hot-card" hidden>
+      <div class="card-head">
+        <h2>Hotspots</h2>
+        <button type="button" class="btn ghost small" id="hot-reset">Reset</button>
+      </div>
+      <div class="row">
+        <span class="label">Shape</span>
+        <div class="seg" id="hot-mode">
+          <label><input type="radio" name="hot-mode" value="points"><span>Points</span></label>
+          <label><input type="radio" name="hot-mode" value="curve"><span>Curve</span></label>
+        </div>
+      </div>
+      <div class="row" id="spread-row">
+        <label class="label" for="spread">Spread</label>
+        <input type="range" id="spread" min="5" max="150" step="1">
+        <span class="num"><output id="spread-out"></output><i>%</i></span>
+      </div>
+      <div class="row" id="soft-row">
+        <label class="label" for="soft">Softness</label>
+        <input type="range" id="soft" min="0" max="100" step="1">
+        <span class="num"><output id="soft-out"></output><i>%</i></span>
+      </div>
+      <p class="note" id="hot-note"></p>
+    </section>
+
+    <section class="card" id="rd-card" hidden>
+      <div class="card-head">
+        <h2>Reaction-diffusion</h2>
+        <div class="btn-pair">
+          <button type="button" class="btn ghost small" id="rd-play">Pause</button>
+          <button type="button" class="btn ghost small" id="rd-restart">Restart</button>
+        </div>
+      </div>
+      <div class="row">
+        <label class="label" for="rd-preset">Pattern</label>
+        <select id="rd-preset">
+          <option value="coral">Coral</option>
+          <option value="mitosis">Mitosis</option>
+          <option value="spots">Spots</option>
+          <option value="maze">Maze</option>
+          <option value="holes">Holes</option>
+          <option value="worms">Worms</option>
+          <option value="waves">Waves</option>
+          <option value="custom">Custom</option>
+        </select>
+      </div>
+      <div class="row">
+        <label class="label" for="rd-f">Feed</label>
+        <input type="range" id="rd-f" min="0.01" max="0.1" step="0.0005">
+        <span class="num"><output id="rd-f-out"></output></span>
+      </div>
+      <div class="row">
+        <label class="label" for="rd-k">Kill</label>
+        <input type="range" id="rd-k" min="0.045" max="0.07" step="0.0005">
+        <span class="num"><output id="rd-k-out"></output></span>
+      </div>
+      <div class="row">
+        <label class="label" for="rd-speed">Speed</label>
+        <input type="range" id="rd-speed" min="1" max="30" step="1">
+        <span class="num"><output id="rd-speed-out"></output></span>
+      </div>
+      <div class="row">
+        <label class="label" for="rd-detail">Detail</label>
+        <input type="range" id="rd-detail" min="160" max="480" step="40">
+        <span class="num"><output id="rd-detail-out"></output></span>
+      </div>
+      <p class="note">A Gray-Scott simulation, after Karl Sims's reaction-diffusion tutorial. Two chemicals spread and react, growing outward from the hotspots, and the gradient colors the result. Download a PNG at any moment to keep the frame.</p>
     </section>
 
     <section class="card">
@@ -134,6 +219,7 @@
       <div class="row">
         <label class="label" for="size">Size</label>
         <select id="size">
+          <option value="fit">Fit window</option>
           <option value="1920x1080">1920 × 1080</option>
           <option value="1080x1080">1080 × 1080</option>
           <option value="1080x1920">1080 × 1920</option>
@@ -148,6 +234,7 @@
         <span class="times">×</span>
         <span class="num wide"><input type="number" id="h" min="1" max="8192" value="1080" aria-label="Height in pixels"></span>
       </div>
+      <p class="note">The canvas takes the shape of this size, so what you see is what you download. Fit window fills the space available.</p>
       <div class="row dl">
         <button type="button" class="btn" data-dl="png">PNG</button>
         <button type="button" class="btn" data-dl="jpg">JPG</button>
