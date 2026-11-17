@@ -108,6 +108,7 @@
         <label class="type"><input type="radio" name="type" value="conic"><span class="type-tile"><i class="ti ti-conic"></i>Conic</span></label>
         <label class="type"><input type="radio" name="type" value="shape"><span class="type-tile"><i class="ti ti-shape"></i>Hotspots</span></label>
         <label class="type"><input type="radio" name="type" value="rd"><span class="type-tile"><i class="ti ti-rd"><svg viewBox="0 0 40 30" preserveAspectRatio="none" aria-hidden="true"><path d="M-2 6c8 0 8 6 16 6s8-6 14-6 6 5 14 5M-2 19c6 0 8 6 14 6s6-9 14-9 8 7 16 7M5 32c0-5 7-5 7 0M25-2c0 5 8 5 8 0"/></svg></i>Reaction</span></label>
+        <label class="type"><input type="radio" name="type" value="formula"><span class="type-tile"><i class="ti ti-formula"></i>Formula</span></label>
       </div>
       <div class="row" id="angle-row">
         <label class="label" for="angle" id="angle-label">Angle</label>
@@ -139,6 +140,62 @@
         </div>
       </div>
       <p class="note">Smooth blends in OKLab, which avoids the grey, muddy middle you get between some colors. Classic is plain sRGB.</p>
+    </section>
+
+    <section class="card" id="formula-card" hidden>
+      <div class="card-head">
+        <h2>Formula</h2>
+        <div class="btn-pair">
+          <button type="button" class="btn ghost small" id="f-today">Today's</button>
+          <button type="button" class="btn small" id="f-roll">Roll</button>
+        </div>
+      </div>
+      <p class="formula-name" id="f-name"></p>
+      <div class="row">
+        <label class="label" for="f-arr">1 Arrange</label>
+        <select id="f-arr"></select>
+      </div>
+      <div class="row">
+        <label class="label" for="f-shape">2 Shape</label>
+        <select id="f-shape"></select>
+      </div>
+      <div class="row">
+        <label class="label" for="f-eff">3 Effector</label>
+        <select id="f-eff"></select>
+      </div>
+      <div class="row">
+        <label class="label" for="f-count">Count</label>
+        <input type="range" id="f-count" min="3" max="40" step="1">
+        <span class="num"><output id="f-count-out"></output></span>
+      </div>
+      <div class="row">
+        <label class="label" for="f-size">Size</label>
+        <input type="range" id="f-size" min="10" max="250" step="1">
+        <span class="num"><output id="f-size-out"></output><i>%</i></span>
+      </div>
+      <div class="row" id="f-amount-row">
+        <label class="label" for="f-amount">Strength</label>
+        <input type="range" id="f-amount" min="0" max="100" step="1">
+        <span class="num"><output id="f-amount-out"></output><i>%</i></span>
+      </div>
+      <div class="row">
+        <label class="label" for="f-seed">Seed</label>
+        <input type="range" id="f-seed" min="1" max="99" step="1">
+        <span class="num"><output id="f-seed-out"></output></span>
+      </div>
+      <div class="row">
+        <span class="label">Ground</span>
+        <div class="seg" id="f-bg">
+          <label><input type="radio" name="f-bg" value="dark"><span>Dark</span></label>
+          <label><input type="radio" name="f-bg" value="light"><span>Light</span></label>
+          <label><input type="radio" name="f-bg" value="gradient"><span>Gradient</span></label>
+        </div>
+      </div>
+      <div class="row end lut-actions">
+        <button type="button" class="btn ghost small" id="f-copy">Copy formula</button>
+        <button type="button" class="btn ghost small" id="f-stamp">Stamp it on the canvas</button>
+      </div>
+      <p class="note">Three choices make one composition, the way a cloner, its object and an effector do. Turn rotates the layout, and dragging the canvas moves the effector's focus. Colors come from the stops. Today's gives the same formula all day.</p>
     </section>
 
     <section class="card" id="hot-card" hidden>
@@ -400,10 +457,17 @@
         <label class="label" for="size">Size</label>
         <select id="size">
           <option value="fit">Fit window</option>
-          <option value="1920x1080">1920 × 1080</option>
-          <option value="1080x1080">1080 × 1080</option>
-          <option value="1080x1920">1080 × 1920</option>
-          <option value="3840x2160">3840 × 2160</option>
+          <optgroup label="Social">
+            <option value="1080x1350">Instagram post 4:5 (1080 × 1350)</option>
+            <option value="1080x1920">Story or Reel 9:16 (1080 × 1920)</option>
+            <option value="1080x1080">Square 1:1 (1080 × 1080)</option>
+            <option value="1080x1440">Threads 3:4 (1080 × 1440)</option>
+            <option value="1600x900">X / Twitter 16:9 (1600 × 900)</option>
+          </optgroup>
+          <optgroup label="Screen">
+            <option value="1920x1080">1920 × 1080</option>
+            <option value="3840x2160">3840 × 2160</option>
+          </optgroup>
           <option value="1024x64">1024 × 64 (ramp strip)</option>
           <option value="custom">Custom</option>
         </select>
@@ -420,6 +484,10 @@
         <button type="button" class="btn" data-dl="jpg">JPG</button>
         <button type="button" class="btn" data-dl="svg" id="dl-svg">SVG</button>
       </div>
+      <div class="row dl">
+        <button type="button" class="btn ghost" id="dl-social">All social sizes (.zip)</button>
+      </div>
+      <p class="note">The zip holds five PNGs: Instagram 4:5, Story 9:16, Square, Threads 3:4 and X 16:9. Each one is laid out again for its own shape, not cropped.</p>
     </section>
 
   </aside>
@@ -433,7 +501,7 @@
   <dl>
     <dt>Random colors</dt><dd><kbd>R</kbd></dd>
     <dt>Reverse the stops</dt><dd><kbd>X</kbd></dd>
-    <dt>Gradient type</dt><dd><kbd>1</kbd> to <kbd>5</kbd></dd>
+    <dt>Gradient type</dt><dd><kbd>1</kbd> to <kbd>6</kbd></dd>
     <dt>Focus mode</dt><dd><kbd>F</kbd></dd>
     <dt>Play or pause the reaction</dt><dd><kbd>Space</kbd></dd>
     <dt>Copy the code</dt><dd><kbd>C</kbd></dd>

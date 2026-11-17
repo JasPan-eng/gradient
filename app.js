@@ -68,9 +68,12 @@
   let uid = 1;
   const mkStop = (color, pos) => ({ id: uid++, color, pos: clamp(+(+pos).toFixed(1), 0, 100) });
 
-  const TYPES = ['linear', 'radial', 'conic', 'shape', 'rd'];
+  const TYPES = ['linear', 'radial', 'conic', 'shape', 'rd', 'formula'];
   const FIELD_TYPES = ['shape', 'rd']; // drawn on a canvas from a field of values, not by CSS
   const SPACES = ['oklab', 'srgb'];
+  const defaultFormula = () => ({
+    arr: 'radial', shape: 'circle', eff: 'ripple', count: 16, size: 78, amount: 80, seed: 7, bg: 'dark',
+  });
   const defaultFx = () => ({
     lut: '', lutMix: 100, blur: 'none', blurAmt: 35, blurAngle: 0,
     half: 'none', halfSize: 10, halfAngle: 30, print: 0,
@@ -93,10 +96,13 @@
     grain: 0,
     steps: 0, // 0 is a smooth blend; 2 and up cuts the gradient into that many flat bands
     fx: defaultFx(),
+    formula: defaultFormula(),
     text: defaultText(),
   };
   state.selected = state.stops[0].id;
   const isField = () => FIELD_TYPES.includes(state.type);
+  const isDrawn = () => isField() || state.type === 'formula'; // painted on a canvas, so no CSS or SVG
+  const usesFxCanvas = () => fxActive() || state.type === 'formula';
 
   const byId = (id) => state.stops.find((s) => s.id === id);
   const sorted = () => [...state.stops].sort((a, b) => a.pos - b.pos || a.id - b.id);
@@ -167,9 +173,9 @@
   }
 
   function cssCode() {
-    if (isField()) {
+    if (isDrawn()) {
       return [
-        '/* Hotspot and reaction gradients cannot be written as a CSS gradient.',
+        '/* Hotspot, reaction and formula pictures cannot be written as a CSS gradient.',
         '   Download a PNG or JPG below and use it as an image: */',
         'background: url("gradient.png") center / cover;',
       ].join('\n');
@@ -206,7 +212,7 @@
   }
 
   function svgCode(w, h) {
-    if (state.type === 'conic' || isField()) {
+    if (state.type === 'conic' || isDrawn()) {
       return '<!-- SVG can only hold linear and radial gradients. Download a PNG instead, or switch the type. -->';
     }
     const g = geometry(w, h);
@@ -233,6 +239,7 @@
 
   function jsonCode() {
     const out = { type: { shape: 'hotspots', rd: 'reaction-diffusion' }[state.type] || state.type };
+    if (state.type === 'formula') out.angle = state.angle;
     if (state.type === 'linear' || state.type === 'conic') out.angle = state.angle;
     if (state.type === 'radial' || state.type === 'conic') out.center = { x: state.cx, y: state.cy };
     out.interpolation = state.space;
@@ -260,6 +267,13 @@
       } else {
         out.reaction = { model: 'gray-scott', feed: state.rd.f, kill: state.rd.k, diffusionA: 1, diffusionB: 0.5 };
       }
+    } else if (state.type === 'formula') {
+      const F = state.formula;
+      out.formula = {
+        arrangement: F_ARRANGE[F.arr][0], shape: F_SHAPE[F.shape][0], effector: F_EFFECT[F.eff][0],
+        count: F.count, size: F.size, strength: F.amount, seed: F.seed, ground: F.bg,
+        focus: { x: state.cx, y: state.cy },
+      };
     } else {
       out.css = state.steps > 1 || grade()
         ? cssGradient(resolved())
@@ -294,7 +308,12 @@
   function paint(canvas, w, h) {
     paintBase(canvas, w, h);
     finishFx(canvas);
+    grainFx(canvas);
+  }
+
+  function grainFx(canvas) {
     if (!state.grain) return;
+    const w = canvas.width, h = canvas.height;
     const ctx = canvas.getContext('2d');
     ctx.save();
     ctx.globalAlpha = grainAlpha();
@@ -305,6 +324,7 @@
   }
 
   function paintBase(canvas, w, h) {
+    if (state.type === 'formula') return drawFormula(canvas, w, h);
     if (isField()) {
       const lutNow = buildLut();
       if (state.type === 'shape') {
@@ -462,7 +482,7 @@
     const isRd = state.type === 'rd';
     els.angleRow.hidden = state.type === 'radial' || field;
     els.centerRows.hidden = state.type === 'linear' || field;
-    els.angleLabel.textContent = state.type === 'conic' ? 'Start' : 'Angle';
+    els.angleLabel.textContent = { conic: 'Start', formula: 'Turn' }[state.type] || 'Angle';
 
     els.hotCard.hidden = !field;
     els.rdCard.hidden = !isRd;
@@ -508,8 +528,11 @@
         ? 'Click the canvas to place hotspots.'
         : state.type === 'linear'
           ? 'Drag the canvas to turn the gradient.'
-          : 'Drag the canvas to move the center.') + ' Click the bar to add a color stop.';
+          : state.type === 'formula'
+            ? 'Drag the canvas to move the effector\'s focus.'
+            : 'Drag the canvas to move the center.') + ' Click the bar to add a color stop.';
     renderFxControls();
+    renderFormulaControls();
     fillRanges();
     els.undo.disabled = !history.length && serialize() === committed;
     els.redo.disabled = !future.length;
@@ -532,7 +555,7 @@
 
   function renderCode() {
     els.code.textContent = currentCode();
-    const noSvg = state.type === 'conic' || isField();
+    const noSvg = state.type === 'conic' || isDrawn();
     els.dlSvg.disabled = noSvg;
     els.dlSvg.title = noSvg ? 'SVG can only hold linear and radial gradients' : '';
   }
@@ -567,6 +590,10 @@
     if (state.type === 'rd') out += `&f=${state.rd.f}&k=${state.rd.k}&v=${state.rd.speed}&d=${state.rd.detail}`;
     if (state.grain) out += `&g=${state.grain}`;
     if (state.steps > 1) out += `&n=${state.steps}`;
+    if (state.type === 'formula') {
+      const F = state.formula;
+      out += `&fm=${[F.arr, F.shape, F.eff, F.count, F.size, F.amount, F.seed, F.bg].join(',')}`;
+    }
     const f = state.fx, t = state.text;
     if (f.lut) out += `&l=${encodeURIComponent(f.lut)}&lm=${f.lutMix}`;
     if (f.blur !== 'none') out += `&b=${f.blur},${f.blurAmt},${f.blurAngle}`;
@@ -639,6 +666,19 @@
       text.under = ts[7] === '1';
     }
     state.text = text;
+
+    if (p.has('fm')) {
+      const fm = p.get('fm').split(','), F = defaultFormula();
+      if (F_ARRANGE[fm[0]]) F.arr = fm[0];
+      if (F_SHAPE[fm[1]]) F.shape = fm[1];
+      if (F_EFFECT[fm[2]]) F.eff = fm[2];
+      F.count = clamp(Math.round(+fm[3]) || F.count, 3, 40);
+      F.size = clamp(Math.round(+fm[4]) || F.size, 10, 250);
+      F.amount = clamp(Number.isFinite(+fm[5]) && fm[5] !== undefined ? Math.round(+fm[5]) : F.amount, 0, 100);
+      F.seed = clamp(Math.round(+fm[6]) || F.seed, 1, 99);
+      if (['dark', 'light', 'gradient'].includes(fm[7])) F.bg = fm[7];
+      state.formula = F;
+    }
 
     if (p.has('p')) {
       const pts = p.get('p').split('_').map((pair) => {
@@ -1087,7 +1127,7 @@
   let fitTimer, fxTimer;
   new ResizeObserver(() => {
     sizeGrain();
-    if (fxActive()) { clearTimeout(fxTimer); fxTimer = setTimeout(render, 160); }
+    if (usesFxCanvas()) { clearTimeout(fxTimer); fxTimer = setTimeout(render, 160); }
     if (els.size.value !== 'fit') return;
     clearTimeout(fitTimer);
     fitTimer = setTimeout(() => {
@@ -1836,11 +1876,11 @@ void main() {
       sizeGrain();
     }
     els.overlay.hidden = !field;
-    const fxOn = fxActive();
+    const fxOn = usesFxCanvas();
     els.fx.hidden = !fxOn;
     if (!field) els.canvas.hidden = els.gl.hidden = true;
     if (!field) {
-      els.preview.style.background = cssGradient(res);
+      els.preview.style.background = state.type === 'formula' ? '#121211' : cssGradient(res);
       if (fxOn) fxPreview();
       return;
     }
@@ -1996,8 +2036,8 @@ void main() {
   }
 
   function renderGuide() {
-    els.guide.hidden = isField();
-    if (isField()) return;
+    els.guide.hidden = isDrawn();
+    if (isDrawn()) return;
     const { w, h } = exportSize();
     const g = geometry(w, h);
     const px = (x) => (x / w) * 100, py = (y) => (y / h) * 100;
@@ -2794,6 +2834,387 @@ void main() {
     state.text.x = clamp(state.text.x + d[0], 0, 100);
     state.text.y = clamp(state.text.y + d[1], 0, 100);
     render();
+  });
+
+  /* ------------------------------------------------------------------ *
+   * Formula: arrangement x shape x effector
+   *
+   * Three choices make one composition, the way a cloner, the object it
+   * clones and an effector do. To add a variable, add a line to one of
+   * the three tables below; it shows up in the menus by itself.
+   * Clone positions are in units where the canvas's short side runs
+   * from -1 to 1, so a formula looks the same at every size.
+   * ------------------------------------------------------------------ */
+
+  // label, then (count, reachX, reachY, random) -> clones as [x, y, angle, cell size]
+  const F_ARRANGE = {
+    grid: ['Grid', (n, rx, ry) => {
+      const s = 2 / n, out = [];
+      const nx = Math.ceil(rx / s), ny = Math.ceil(ry / s);
+      for (let j = -ny; j <= ny; j++) for (let i = -nx; i <= nx; i++) out.push([i * s, j * s, 0, s]);
+      return out;
+    }],
+    hex: ['Honeycomb', (n, rx, ry) => {
+      const s = 2 / n, row = s * 0.866, out = [];
+      const nx = Math.ceil(rx / s) + 1, ny = Math.ceil(ry / row);
+      for (let j = -ny; j <= ny; j++) {
+        const shift = j % 2 ? s / 2 : 0;
+        for (let i = -nx; i <= nx; i++) out.push([i * s + shift, j * row, 0, s]);
+      }
+      return out;
+    }],
+    radial: ['Radial', (n, rx, ry) => {
+      const s = 2 / n, out = [[0, 0, 0, s]];
+      for (let k = 1; k * s <= Math.hypot(rx, ry) + s; k++) {
+        const r = k * s, count = Math.max(6, Math.round((6.2832 * r) / s));
+        for (let j = 0; j < count; j++) {
+          const a = (j / count) * 6.2832 + (k % 2 ? Math.PI / count : 0);
+          out.push([r * Math.cos(a), r * Math.sin(a), a + Math.PI / 2, s]);
+        }
+      }
+      return out;
+    }],
+    spiral: ['Spiral', (n, rx, ry) => {
+      const total = Math.round(n * n * 1.6), reach = Math.hypot(rx, ry), c = reach / Math.sqrt(total), out = [];
+      for (let i = 0; i < total; i++) {
+        const r = c * Math.sqrt(i + 0.5), a = i * 2.39996; // the golden angle
+        out.push([r * Math.cos(a), r * Math.sin(a), a + Math.PI / 2, c * 1.75]);
+      }
+      return out;
+    }],
+    rings: ['Rings', (n) => {
+      const out = [];
+      for (let i = n; i >= 1; i--) out.push([0, 0, 0, (i / n) * 2.9]);
+      return out;
+    }],
+    line: ['Line', (n, rx) => {
+      const out = [];
+      for (let i = 0; i < n; i++) out.push([(n > 1 ? i / (n - 1) - 0.5 : 0) * 1.5 * rx, 0, 0, 1.1]);
+      return out;
+    }],
+    circle: ['Circle', (n) => {
+      const count = n * 2, r = 0.66, out = [];
+      for (let j = 0; j < count; j++) {
+        const a = (j / count) * 6.2832;
+        out.push([r * Math.cos(a), r * Math.sin(a), a + Math.PI / 2, ((6.2832 * r) / count) * 1.6]);
+      }
+      return out;
+    }],
+    scatter: ['Scatter', (n, rx, ry, rnd) => {
+      const total = Math.round(n * n * 1.2), out = [];
+      for (let i = 0; i < total; i++) out.push([(rnd() * 2 - 1) * rx, (rnd() * 2 - 1) * ry, rnd() * 6.2832, (2 / n) * 1.3]);
+      return out;
+    }],
+  };
+  // these fill the whole picture, so they are built big enough to survive being turned
+  const F_FILLS = ['grid', 'hex', 'radial', 'spiral', 'scatter'];
+
+  // label, then (context, radius): add the outline to the current path, centered on 0,0
+  const F_SHAPE = {
+    circle: ['Circle', (c, r) => c.arc(0, 0, r, 0, 6.2832)],
+    ring: ['Ring', (c, r) => { c.arc(0, 0, r, 0, 6.2832); c.moveTo(r * 0.74, 0); c.arc(0, 0, r * 0.74, 0, 6.2832, true); }],
+    square: ['Square', (c, r) => c.rect(-r, -r, r * 2, r * 2)],
+    round: ['Soft square', (c, r) => (c.roundRect ? c.roundRect(-r, -r, r * 2, r * 2, r * 0.42) : c.rect(-r, -r, r * 2, r * 2))],
+    diamond: ['Diamond', (c, r) => { c.moveTo(0, -r); c.lineTo(r, 0); c.lineTo(0, r); c.lineTo(-r, 0); c.closePath(); }],
+    triangle: ['Triangle', (c, r) => { c.moveTo(0, -r); c.lineTo(r * 0.866, r * 0.5); c.lineTo(-r * 0.866, r * 0.5); c.closePath(); }],
+    bar: ['Bar', (c, r) => c.rect(-r, -r * 0.16, r * 2, r * 0.32)],
+    plus: ['Plus', (c, r) => { const t = r * 0.3; c.rect(-r, -t, r * 2, t * 2); c.rect(-t, -r, t * 2, r * 2); }],
+    half: ['Half moon', (c, r) => { c.arc(0, 0, r, 0, Math.PI); c.closePath(); }],
+    star: ['Star', (c, r) => {
+      for (let k = 0; k < 8; k++) {
+        const a = (k * Math.PI) / 4 - Math.PI / 2, rad = k % 2 ? r * 0.38 : r;
+        if (k) c.lineTo(rad * Math.cos(a), rad * Math.sin(a)); else c.moveTo(rad * Math.cos(a), rad * Math.sin(a));
+      }
+      c.closePath();
+    }],
+  };
+
+  // label, then (clone) -> a value from 0 to 1. The value picks the clone's color from the
+  // gradient, and with Strength it also shrinks and turns the clone.
+  // clone: x, y (position), d (distance from the focus), t (order, 0 to 1), r (its own random
+  // number), cell, seed, noise(x, y)
+  const F_EFFECT = {
+    plain: ['Plain', (q) => q.t],
+    random: ['Random', (q) => q.r],
+    wave: ['Wave', (q) => 0.5 + 0.5 * Math.sin((q.x + q.y * 0.6) * 4 + q.seed)],
+    falloff: ['Falloff', (q) => 1 - clamp(q.d / 1.25, 0, 1)],
+    ripple: ['Ripple', (q) => 0.5 + 0.5 * Math.cos(q.d * 9)],
+    noise: ['Noise', (q) => q.noise(q.x * 1.5, q.y * 1.5)],
+    twist: ['Twist', (q) => clamp(q.d / 1.4, 0, 1)],
+    checker: ['Checker', (q) => (Math.abs(Math.round(q.x / q.cell) + Math.round(q.y / q.cell)) % 2 ? 0.92 : 0.12)],
+  };
+
+  const mulberry = (seed) => () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+
+  function drawFormula(canvas, w, h) {
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    const F = state.formula, ramp = buildLut();
+    const color = (v) => {
+      const i = Math.round(clamp(v, 0, 1) * 1023) * 3;
+      return `rgb(${ramp[i]},${ramp[i + 1]},${ramp[i + 2]})`;
+    };
+
+    if (F.bg === 'gradient') {
+      const g = ctx.createLinearGradient(0, 0, 0, h);
+      for (const s of resolved()) g.addColorStop(clamp(s.pos / 100, 0, 1), s.color);
+      ctx.fillStyle = g;
+    } else ctx.fillStyle = F.bg === 'light' ? '#f4f0e6' : '#121211';
+    ctx.fillRect(0, 0, w, h);
+
+    const m = Math.min(w, h) / 2, ax = w / 2 / m, ay = h / 2 / m;
+    const reach = F_FILLS.includes(F.arr) ? Math.hypot(ax, ay) : 0;
+    const rnd = mulberry(F.seed * 7919);
+    const clones = F_ARRANGE[F.arr][1](F.count, reach || ax, reach || ay, rnd);
+    const hash = (i, j) => {
+      let v = (Math.imul(i, 374761393) + Math.imul(j, 668265263) + Math.imul(F.seed, 1442695041)) | 0;
+      v = Math.imul(v ^ (v >>> 13), 1274126177);
+      return ((v ^ (v >>> 16)) >>> 0) / 4294967296;
+    };
+    const noise = (x, y) => {
+      const x0 = Math.floor(x), y0 = Math.floor(y);
+      let tx = x - x0, ty = y - y0;
+      tx = tx * tx * (3 - 2 * tx); ty = ty * ty * (3 - 2 * ty);
+      const top = hash(x0, y0) + (hash(x0 + 1, y0) - hash(x0, y0)) * tx;
+      const bot = hash(x0, y0 + 1) + (hash(x0 + 1, y0 + 1) - hash(x0, y0 + 1)) * tx;
+      return top + (bot - top) * ty;
+    };
+
+    const turn = (state.angle * Math.PI) / 180, co = Math.cos(turn), si = Math.sin(turn);
+    const fx = (state.cx / 50 - 1) * ax, fy = (state.cy / 50 - 1) * ay; // the effector's focus
+    const effect = F_EFFECT[F.eff][1], shape = F_SHAPE[F.shape][1];
+    const amount = F.eff === 'plain' ? 0 : F.amount / 100;
+    const total = clones.length;
+
+    clones.forEach(([x0, y0, a, cell], i) => {
+      let x = x0 * co - y0 * si, y = x0 * si + y0 * co;
+      const d = Math.hypot(x - fx, y - fy);
+      const v = clamp(effect({ x, y, d, t: total > 1 ? i / (total - 1) : 0, r: rnd(), cell, seed: F.seed, noise }), 0, 1);
+      let spin = amount * v * Math.PI;
+      if (F.eff === 'twist') {
+        // swing each clone around the focus, more the closer it is
+        const sw = amount * (1 - v) * 2.6, c2 = Math.cos(sw), s2 = Math.sin(sw);
+        const dx = x - fx, dy = y - fy;
+        x = fx + dx * c2 - dy * s2;
+        y = fy + dx * s2 + dy * c2;
+        spin = sw;
+      }
+      const r = cell * m * 0.5 * (F.size / 100) * (1 - amount * (1 - v) * (F.eff === 'twist' ? 0.4 : 1));
+      const px = w / 2 + x * m, py = h / 2 + y * m;
+      if (r < 0.3 || px < -r || py < -r || px > w + r || py > h + r) return;
+      const th = a + turn + spin, c1 = Math.cos(th), s1 = Math.sin(th);
+      ctx.setTransform(c1, s1, -s1, c1, px, py);
+      ctx.beginPath();
+      shape(ctx, r);
+      ctx.fillStyle = color(v);
+      ctx.fill();
+    });
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+  }
+
+  /* ---------- formula controls ---------- */
+
+  const fEls = {
+    card: $('#formula-card'), name: $('#f-name'), arr: $('#f-arr'), shape: $('#f-shape'), eff: $('#f-eff'),
+    count: $('#f-count'), size: $('#f-size'), amount: $('#f-amount'), seed: $('#f-seed'),
+    countOut: $('#f-count-out'), sizeOut: $('#f-size-out'), amountOut: $('#f-amount-out'), seedOut: $('#f-seed-out'),
+    amountRow: $('#f-amount-row'),
+  };
+  for (const [el, table] of [[fEls.arr, F_ARRANGE], [fEls.shape, F_SHAPE], [fEls.eff, F_EFFECT]]) {
+    for (const key of Object.keys(table)) {
+      const o = document.createElement('option');
+      o.value = key;
+      o.textContent = table[key][0];
+      el.append(o);
+    }
+  }
+  const formulaName = () => {
+    const F = state.formula;
+    return `${F_ARRANGE[F.arr][0]} × ${F_SHAPE[F.shape][0]} × ${F_EFFECT[F.eff][0]}`;
+  };
+
+  function renderFormulaControls() {
+    const F = state.formula;
+    fEls.card.hidden = state.type !== 'formula';
+    fEls.name.textContent = formulaName();
+    fEls.arr.value = F.arr;
+    fEls.shape.value = F.shape;
+    fEls.eff.value = F.eff;
+    setValue(fEls.count, F.count);
+    setValue(fEls.size, F.size);
+    setValue(fEls.amount, F.amount);
+    setValue(fEls.seed, F.seed);
+    fEls.countOut.textContent = F.count;
+    fEls.sizeOut.textContent = F.size;
+    fEls.amountOut.textContent = F.amount;
+    fEls.seedOut.textContent = F.seed;
+    fEls.amountRow.hidden = F.eff === 'plain';
+    setRadio('f-bg', F.bg);
+  }
+
+  for (const key of ['arr', 'shape', 'eff']) {
+    fEls[key].addEventListener('change', () => { state.formula[key] = fEls[key].value; render(); });
+  }
+  for (const key of ['count', 'size', 'amount', 'seed']) {
+    fEls[key].addEventListener('input', () => { state.formula[key] = +fEls[key].value; render(); });
+  }
+  $('#f-bg').addEventListener('change', () => { state.formula.bg = radio('f-bg'); render(); });
+
+  /** Pick the three variables and their numbers from a random source. */
+  function rollFormula(rnd) {
+    const pick = (table) => { const keys = Object.keys(table); return keys[Math.floor(rnd() * keys.length)]; };
+    const F = state.formula;
+    F.arr = pick(F_ARRANGE);
+    F.shape = pick(F_SHAPE);
+    F.eff = pick(F_EFFECT);
+    F.count = 6 + Math.floor(rnd() * 22);
+    F.size = 55 + Math.floor(rnd() * 80);
+    F.amount = 50 + Math.floor(rnd() * 50);
+    F.seed = 1 + Math.floor(rnd() * 99);
+  }
+  $('#f-roll').addEventListener('click', () => {
+    commit();
+    rollFormula(Math.random);
+    render();
+  });
+  $('#f-today').addEventListener('click', () => {
+    // the date is the seed, so today's formula is the same every time you ask
+    const now = new Date();
+    const rnd = mulberry(now.getFullYear() * 10000 + (now.getMonth() + 1) * 100 + now.getDate());
+    commit();
+    rollFormula(rnd);
+    const [, ...cols] = PRESETS[Math.floor(rnd() * PRESETS.length)];
+    setStops(cols.map((c) => '#' + c));
+    state.angle = Math.floor(rnd() * 8) * 45;
+    state.cx = state.cy = 50;
+    render({ forceOrder: true });
+    toast(`Today's formula: ${formulaName()}`);
+  });
+  $('#f-copy').addEventListener('click', () => {
+    const F = state.formula;
+    copy(
+      `${formulaName()}\ncount ${F.count} · size ${F.size}% · strength ${F.amount}% · seed ${F.seed}`,
+      'Formula copied');
+  });
+  $('#f-stamp').addEventListener('click', () => {
+    commit();
+    state.text = Object.assign(defaultText(), {
+      str: formulaName().toUpperCase(), font: 'mono', size: 2.5, spacing: 12, y: 94,
+      color: state.formula.bg === 'light' ? '#1a1a18' : '#fafaf7',
+    });
+    render();
+  });
+
+  /* ---------- every social size at once, as one zip ---------- */
+
+  const SOCIAL = [
+    ['instagram-post-4x5', 1080, 1350],
+    ['instagram-story-9x16', 1080, 1920],
+    ['square-1x1', 1080, 1080],
+    ['threads-3x4', 1080, 1440],
+    ['x-twitter-16x9', 1600, 900],
+  ];
+
+  const crcTable = (() => {
+    const t = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      t[n] = c >>> 0;
+    }
+    return t;
+  })();
+  const crc32 = (bytes) => {
+    let c = ~0;
+    for (let i = 0; i < bytes.length; i++) c = crcTable[(c ^ bytes[i]) & 255] ^ (c >>> 8);
+    return ~c >>> 0;
+  };
+
+  /** A plain zip with nothing compressed (PNGs are already compressed). files: [{ name, data }] */
+  function zip(files) {
+    const enc = new TextEncoder();
+    const parts = [], central = [];
+    let offset = 0;
+    for (const f of files) {
+      const name = enc.encode(f.name), crc = crc32(f.data), size = f.data.length;
+      const local = new DataView(new ArrayBuffer(30));
+      local.setUint32(0, 0x04034b50, true);
+      local.setUint16(4, 20, true);
+      local.setUint16(12, 0x21, true); // 1 January 1980
+      local.setUint32(14, crc, true);
+      local.setUint32(18, size, true);
+      local.setUint32(22, size, true);
+      local.setUint16(26, name.length, true);
+      parts.push(local.buffer, name, f.data);
+      const cen = new DataView(new ArrayBuffer(46));
+      cen.setUint32(0, 0x02014b50, true);
+      cen.setUint16(4, 20, true);
+      cen.setUint16(6, 20, true);
+      cen.setUint16(14, 0x21, true);
+      cen.setUint32(16, crc, true);
+      cen.setUint32(20, size, true);
+      cen.setUint32(24, size, true);
+      cen.setUint16(28, name.length, true);
+      cen.setUint32(42, offset, true);
+      central.push(cen.buffer, name);
+      offset += 30 + name.length + size;
+    }
+    const cdSize = central.reduce((n, p) => n + p.byteLength, 0);
+    const end = new DataView(new ArrayBuffer(22));
+    end.setUint32(0, 0x06054b50, true);
+    end.setUint16(8, files.length, true);
+    end.setUint16(10, files.length, true);
+    end.setUint32(12, cdSize, true);
+    end.setUint32(16, offset, true);
+    return new Blob([...parts, ...central, end.buffer], { type: 'application/zip' });
+  }
+
+  /** Paint at a size other than the one on screen. */
+  function paintAt(canvas, w, h) {
+    if (state.type === 'rd') {
+      // the running reaction keeps its own shape: paint it large enough to cover, then crop
+      const cur = exportSize(), ar = cur.w / cur.h;
+      let bw = w, bh = Math.round(w / ar);
+      if (bh < h) { bh = h; bw = Math.round(h * ar); }
+      const base = document.createElement('canvas');
+      paintBase(base, bw, bh);
+      canvas.width = w;
+      canvas.height = h;
+      canvas.getContext('2d').drawImage(base, Math.round((w - bw) / 2), Math.round((h - bh) / 2));
+      finishFx(canvas);
+      grainFx(canvas);
+      return;
+    }
+    // the other kinds lay themselves out again for the new shape
+    const keep = [els.w.value, els.h.value];
+    els.w.value = w;
+    els.h.value = h;
+    try { paint(canvas, w, h); } finally { [els.w.value, els.h.value] = keep; }
+  }
+
+  $('#dl-social').addEventListener('click', async () => {
+    toast('Making five sizes');
+    await new Promise((r) => setTimeout(r, 30)); // let the message show first
+    const files = [];
+    try {
+      for (const [name, w, h] of SOCIAL) {
+        const canvas = document.createElement('canvas');
+        paintAt(canvas, w, h);
+        const blob = await new Promise((r) => canvas.toBlob(r, 'image/png'));
+        if (!blob) throw new Error('no image');
+        files.push({ name: `${name}-${w}x${h}.png`, data: new Uint8Array(await blob.arrayBuffer()) });
+      }
+    } catch (err) {
+      return toast('This browser could not make those images');
+    }
+    download(zip(files), 'gradient-social.zip');
+    toast('Saved gradient-social.zip');
   });
 
   /* ------------------------------------------------------------------ *
