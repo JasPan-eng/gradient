@@ -79,8 +79,9 @@
     half: 'none', halfSize: 10, halfAngle: 30, print: 0,
   });
   const defaultText = () => ({
-    str: '', font: 'sans', size: 12, spacing: 0, color: '#fafaf7', blend: 'normal', x: 50, y: 50, under: false,
+    layout: 'free', font: 'sans', size: 12, spacing: 0, color: '#fafaf7', blend: 'normal', x: 50, y: 50, under: false, shade: 0,
   });
+  const blankSlide = () => ({ k: '', h: '', b: '', f: '' }); // kicker, headline, body, footer
   const defaultHotspots = () => [{ x: 0.25, y: 0.62 }, { x: 0.5, y: 0.36 }, { x: 0.75, y: 0.62 }];
 
   const state = {
@@ -98,11 +99,13 @@
     fx: defaultFx(),
     formula: defaultFormula(),
     text: defaultText(),
+    slides: [blankSlide()],
+    slide: 0,
   };
   state.selected = state.stops[0].id;
   const isField = () => FIELD_TYPES.includes(state.type);
   const isDrawn = () => isField() || state.type === 'formula'; // painted on a canvas, so no CSS or SVG
-  const usesFxCanvas = () => fxActive() || state.type === 'formula';
+  const usesFxCanvas = () => fxActive() || gridOn || state.type === 'formula';
 
   const byId = (id) => state.stops.find((s) => s.id === id);
   const sorted = () => [...state.stops].sort((a, b) => a.pos - b.pos || a.id - b.id);
@@ -252,9 +255,12 @@
     if (f.half !== 'none') fxOut.halftone = { kind: f.half, size: f.halfSize, angle: f.halfAngle };
     if (f.print) fxOut.printTexture = f.print;
     if (Object.keys(fxOut).length) out.effects = fxOut;
-    if (hasText()) {
+    if (anyText()) {
       const t = state.text;
-      out.text = { content: t.str, font: t.font, size: t.size, color: t.color, blend: t.blend, x: t.x, y: t.y };
+      out.text = {
+        layout: t.layout, font: t.font, size: t.size, color: t.color, blend: t.blend,
+        slides: state.slides.map((sl) => ({ kicker: sl.k, headline: sl.h, body: sl.b, footer: sl.f })),
+      };
     }
     if (isField()) {
       out.hotspots = {
@@ -383,6 +389,10 @@
     textSize: $('#text-size'), textSizeOut: $('#text-size-out'),
     textSpacing: $('#text-spacing'), textSpacingOut: $('#text-spacing-out'),
     textColor: $('#text-color'), textBlend: $('#text-blend'), typeHandle: $('#type-handle'),
+    textKicker: $('#text-kicker'), textBody: $('#text-body'), textFooter: $('#text-footer'),
+    textLayout: $('#text-layout'), textSizeRow: $('#text-size-row'),
+    textShade: $('#text-shade'), textShadeOut: $('#text-shade-out'),
+    slides: $('#slides'), slideAdd: $('#slide-add'), slideDel: $('#slide-del'), dlSlides: $('#dl-slides'),
   };
   const root = document.documentElement;
 
@@ -599,9 +609,10 @@
     if (f.blur !== 'none') out += `&b=${f.blur},${f.blurAmt},${f.blurAngle}`;
     if (f.half !== 'none') out += `&h=${f.half},${f.halfSize},${f.halfAngle}`;
     if (f.print) out += `&pt=${f.print}`;
-    if (hasText()) {
-      out += `&tx=${encodeURIComponent(t.str)}&ts=` +
-        [t.font, t.size, t.spacing, t.color.slice(1), t.blend, fmt(t.x), fmt(t.y), t.under ? 1 : 0].join(',');
+    if (anyText() || state.slides.length > 1) {
+      const all = state.slides.map((sl) => [sl.k, sl.h, sl.b, sl.f]);
+      out += `&sld=${encodeURIComponent(JSON.stringify(all))}&si=${state.slide}&ts=` +
+        [t.font, t.size, t.spacing, t.color.slice(1), t.blend, fmt(t.x), fmt(t.y), t.under ? 1 : 0, t.layout, t.shade].join(',');
     }
     return out;
   };
@@ -653,8 +664,20 @@
     state.fx = fx;
 
     const text = defaultText();
-    if (p.has('tx')) {
-      text.str = p.get('tx').slice(0, 400);
+    let slides = [];
+    try {
+      const raw = JSON.parse(p.get('sld') || '[]');
+      if (Array.isArray(raw)) {
+        slides = raw.slice(0, 10).filter(Array.isArray).map((row) => {
+          const str = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+          return { k: str(row[0], 200), h: str(row[1], 200), b: str(row[2], 600), f: str(row[3], 200) };
+        });
+      }
+    } catch (e) { /* a damaged link: no slides */ }
+    if (!slides.length && p.has('tx')) slides = [Object.assign(blankSlide(), { h: p.get('tx').slice(0, 200) })]; // links from before slides
+    state.slides = slides.length ? slides : [blankSlide()];
+    state.slide = clamp(Math.round(num('si', 0, 9, 0)), 0, state.slides.length - 1);
+    if (p.has('ts')) {
       const ts = (p.get('ts') || '').split(',');
       if (FONTS[ts[0]]) text.font = ts[0];
       text.size = clamp(parseFloat(ts[1]) || 12, 2, 40);
@@ -664,6 +687,8 @@
       text.x = clamp(Number.isFinite(parseFloat(ts[5])) ? parseFloat(ts[5]) : 50, 0, 100);
       text.y = clamp(Number.isFinite(parseFloat(ts[6])) ? parseFloat(ts[6]) : 50, 0, 100);
       text.under = ts[7] === '1';
+      if (LAYOUTS[ts[8]]) text.layout = ts[8];
+      text.shade = clamp(Math.round(+ts[9]) || 0, 0, 100);
     }
     state.text = text;
 
@@ -1840,7 +1865,7 @@ void main() {
       const scale = Math.max(rd.w, rd.h) * 2 <= 960 ? 2 : 1;
       drawField(els.canvas, rdOutput(), rd.w, rd.h, rd.w * scale, rd.h * scale, lut);
     }
-    if (fxActive()) fxPreview(rd.gpu ? els.gl : els.canvas);
+    if (usesFxCanvas()) fxPreview(rd.gpu ? els.gl : els.canvas);
   }
 
   function rdFrame() {
@@ -2630,32 +2655,195 @@ void main() {
 
   /* ---------- type ---------- */
 
-  // label, then a canvas font with % where the size goes
+  /* A post can be a carousel: each slide has its own words, and all slides share the look.
+     Words have four jobs, biggest contrast first: kicker (a small label), headline, body, footer. */
+  const SANS = '"Neue Haas Unica Pro", "Neue Haas Unica", "Helvetica Neue", Helvetica, Arial, sans-serif';
+  const SERIF = '"Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif';
+  const MONO = 'ui-monospace, "SF Mono", "Cascadia Code", Consolas, Menlo, monospace';
+  // label, headline weight, headline family, family for the small text
   const FONTS = {
-    sans: ['Sans bold', '700 %px "Neue Haas Unica Pro", "Neue Haas Unica", "Helvetica Neue", Helvetica, Arial, sans-serif'],
-    light: ['Sans light', '300 %px "Neue Haas Unica Pro", "Neue Haas Unica", "Helvetica Neue", Helvetica, Arial, sans-serif'],
-    serif: ['Serif', '400 %px "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif'],
-    italic: ['Serif italic', 'italic 400 %px Georgia, "Times New Roman", serif'],
-    mono: ['Mono', '500 %px ui-monospace, "SF Mono", "Cascadia Code", Consolas, Menlo, monospace'],
-    poster: ['Poster', '400 %px Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif'],
+    sans: ['Sans bold', '700', SANS, SANS],
+    light: ['Sans light', '300', SANS, SANS],
+    serif: ['Serif', '400', SERIF, SERIF],
+    italic: ['Serif italic', 'italic 400', 'Georgia, "Times New Roman", serif', 'Georgia, "Times New Roman", serif'],
+    mono: ['Mono', '500', MONO, MONO],
+    poster: ['Poster', '400', 'Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif', SANS],
   };
   const BLENDS = ['normal', 'overlay', 'soft-light', 'difference', 'multiply', 'screen'];
-  const hasText = () => state.text.str.trim().length > 0;
+
+  // label, then where the stack of kicker, headline and body sits.
+  // col: how much of the width between the margins the text may use. fit: size the headline to fill it.
+  const LAYOUTS = {
+    free: ['Free: drag it anywhere', { anchor: 'free', align: 'center', col: 0.86 }],
+    poster: ['Poster: bottom left', { anchor: 'bottom', align: 'left', col: 1 }],
+    editorial: ['Editorial: top left', { anchor: 'top', align: 'left', col: 0.84 }],
+    center: ['Centered', { anchor: 'middle', align: 'center', col: 0.84 }],
+    split: ['Split: title top, text bottom', { anchor: 'split', align: 'left', col: 1 }],
+    statement: ['Statement: fill the width', { anchor: 'bottom', align: 'left', col: 1, fit: true }],
+  };
+
+  const cur = () => state.slides[state.slide];
+  const slideHasText = (s) => (s.k + s.h + s.b + s.f).trim().length > 0;
+  const hasText = () => slideHasText(cur());
+  const anyText = () => state.slides.some(slideHasText);
+  let gridOn = false; // the layout grid, shown on screen only
+
+  /** Margins shared by the type and the grid. Stories keep clear of the app's own buttons. */
+  function typeFrame(w, h) {
+    const m = Math.min(w, h) * 0.07, story = w / h <= 0.6;
+    return { left: m, right: w - m, top: story ? h * 0.13 : m, bottom: story ? h * 0.82 : h - m };
+  }
 
   function drawType(ctx, w, h) {
-    const t = state.text;
-    const size = (t.size / 100) * w;
-    const lines = t.str.split('\n');
-    const lh = size * 1.05;
+    const t = state.text, s = cur(), F = FONTS[t.font], L = LAYOUTS[t.layout][1];
+    const fr = typeFrame(w, h), inner = fr.right - fr.left;
+    const colW = inner * L.col;
+    const setFont = (weight, px, family, track) => {
+      ctx.font = `${weight} ${px.toFixed(2)}px ${family}`;
+      try { ctx.letterSpacing = `${track.toFixed(2)}px`; } catch (e) { /* not in this browser */ }
+    };
+    const wrap = (text, maxW) => {
+      const lines = [];
+      for (const para of text.split('\n')) {
+        const words = para.split(/\s+/).filter(Boolean);
+        if (!words.length) { lines.push(''); continue; }
+        let line = words[0];
+        for (const word of words.slice(1)) {
+          if (ctx.measureText(`${line} ${word}`).width <= maxW) line += ' ' + word;
+          else { lines.push(line); line = word; }
+        }
+        lines.push(line);
+      }
+      return lines;
+    };
+    const widest = (lines) => lines.reduce((m, l) => Math.max(m, ctx.measureText(l).width), 0);
+
+    // sizes step down in clear jumps: headline, then body at about a quarter, then the small text
+    let H = (t.size / 100) * w;
+    const track = (px) => (t.spacing / 100) * px;
+    let head = [];
+    if (s.h.trim()) {
+      if (L.fit) {
+        head = s.h.split('\n');
+        setFont(F[1], 100, F[2], track(100));
+        H = clamp((100 * colW) / (widest(head) || 1), w * 0.04, ((fr.bottom - fr.top) * 0.6) / head.length);
+      } else if (L.anchor === 'free') head = s.h.split('\n');
+      else {
+        // wrap to the column, and shrink until even the longest word fits inside the margins
+        for (let i = 0; i < 16; i++) {
+          setFont(F[1], H, F[2], track(H));
+          head = wrap(s.h, colW);
+          if (widest(head) <= colW + 1) break;
+          H *= 0.9;
+        }
+      }
+    }
+    const bodySize = clamp(H * 0.26, w * 0.026, w * 0.042);
+    const small = clamp(bodySize * 0.72, w * 0.019, w * 0.03);
+    setFont('400', bodySize, F[3], 0);
+    // a body line reads best at 45 to 70 characters, so it gets a narrower column than the headline
+    const bodyW = Math.min(L.anchor === 'split' ? inner * 0.62 : colW, bodySize * 30);
+    const body = s.b.trim() ? wrap(s.b, bodyW) : [];
+    const kicker = s.k.trim().toUpperCase();
+    const page = state.slides.length > 1 ? `${state.slide + 1} / ${state.slides.length}` : '';
+    const footer = s.f.trim();
+
+    const headLH = H * (t.font === 'poster' ? 1 : 1.04), bodyLH = bodySize * 1.38;
+    const kH = kicker ? small * 1.2 : 0, hH = head.length * headLH, bH = body.length * bodyLH;
+    const g1 = kicker && head.length ? small * 0.5 + H * 0.14 : kicker && body.length ? small : 0;
+    const g2 = head.length && body.length ? Math.max(bodySize * 0.9, H * 0.28) : 0;
+    const footRow = footer || page ? small * 2.4 : 0;
+    const footTop = L.anchor === 'bottom'; // the footer takes the edge the stack does not use
+
+    const center = L.align === 'center';
+    let x = center ? w / 2 : fr.left, top, bodyTop = null;
+    if (L.anchor === 'free') {
+      x = (w * t.x) / 100;
+      top = (h * t.y) / 100 - hH / 2 - g1 - kH;
+    } else if (L.anchor === 'bottom') top = fr.bottom - (kH + g1 + hH + g2 + bH);
+    else if (L.anchor === 'top') top = fr.top;
+    else if (L.anchor === 'middle') top = (fr.top + fr.bottom - (kH + g1 + hH + g2 + bH)) / 2;
+    else {
+      top = fr.top;
+      bodyTop = fr.bottom - footRow - bH;
+    }
+
     ctx.save();
-    ctx.font = FONTS[t.font][1].replace('%', size.toFixed(2));
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    try { ctx.letterSpacing = `${((t.spacing / 100) * size).toFixed(2)}px`; } catch (e) { /* not in this browser */ }
+    if (t.shade) {
+      // a shade behind the words, darkest at the edge they sit on, so they stay readable on a busy picture
+      const c = hexToRgb(t.color), a = (t.shade / 100) * 0.85;
+      const rgb = luma(c[0] / 255, c[1] / 255, c[2] / 255) > 0.5 ? '18, 18, 17' : '250, 250, 247';
+      const fade = (y0, y1) => {
+        const g = ctx.createLinearGradient(0, y0, 0, y1);
+        g.addColorStop(0, `rgba(${rgb}, ${a})`);
+        g.addColorStop(1, `rgba(${rgb}, 0)`);
+        return g;
+      };
+      const stackH = kH + g1 + hH + g2 + bH;
+      if (L.anchor === 'bottom') ctx.fillStyle = fade(h, Math.max(0, top - stackH * 0.5));
+      else if (L.anchor === 'top') ctx.fillStyle = fade(0, Math.min(h, top + stackH * 1.5));
+      else ctx.fillStyle = `rgba(${rgb}, ${L.anchor === 'split' ? 0 : a * 0.6})`;
+      ctx.fillRect(0, 0, w, h);
+      if (L.anchor === 'split') {
+        ctx.fillStyle = fade(0, Math.min(h, top + (kH + g1 + hH) * 1.5));
+        ctx.fillRect(0, 0, w, h);
+        if (body.length) { ctx.fillStyle = fade(h, Math.max(0, bodyTop - bH * 0.5)); ctx.fillRect(0, 0, w, h); }
+      }
+    }
     ctx.fillStyle = t.color;
     ctx.globalCompositeOperation = t.blend === 'normal' ? 'source-over' : t.blend;
-    const y0 = (h * t.y) / 100 - ((lines.length - 1) * lh) / 2;
-    lines.forEach((line, i) => ctx.fillText(line, (w * t.x) / 100, y0 + i * lh));
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = center ? 'center' : 'left';
+    let y = top;
+    if (kicker) {
+      setFont('600', small, F[3], small * 0.14);
+      ctx.fillText(kicker, x, y + kH / 2);
+      y += kH + g1;
+    }
+    if (head.length) {
+      setFont(F[1], H, F[2], track(H));
+      head.forEach((line, i) => ctx.fillText(line, x, y + i * headLH + headLH / 2));
+      y += hH + g2;
+    }
+    if (body.length) {
+      setFont('400', bodySize, F[3], 0);
+      const by = bodyTop === null ? y : bodyTop;
+      body.forEach((line, i) => ctx.fillText(line, x, by + i * bodyLH + bodyLH / 2));
+    }
+    if (footRow) {
+      setFont('600', small, F[3], small * 0.04);
+      const fy = footTop ? fr.top + small / 2 : fr.bottom - small / 2;
+      if (footer) {
+        ctx.textAlign = center ? 'center' : 'left';
+        ctx.fillText(footer, center ? w / 2 : fr.left, fy);
+      }
+      if (page) {
+        ctx.textAlign = 'right';
+        ctx.fillText(page, fr.right, fy);
+      }
+    }
+    ctx.restore();
+  }
+
+  /** The layout grid: margins, columns and thirds. On screen only, never in a download. */
+  function drawGuides(ctx, w, h) {
+    const fr = typeFrame(w, h), inner = fr.right - fr.left;
+    const cols = w / h > 1.3 ? 6 : 4, gutter = w * 0.02;
+    const colW = (inner - gutter * (cols - 1)) / cols;
+    const px = Math.max(1, Math.round(Math.max(w, h) / 900));
+    ctx.save();
+    ctx.fillStyle = 'rgba(255, 64, 140, .1)';
+    for (let i = 0; i < cols; i++) ctx.fillRect(fr.left + i * (colW + gutter), fr.top, colW, fr.bottom - fr.top);
+    ctx.strokeStyle = 'rgba(255, 64, 140, .75)';
+    ctx.lineWidth = px;
+    ctx.strokeRect(fr.left, fr.top, inner, fr.bottom - fr.top);
+    ctx.setLineDash([px * 6, px * 6]);
+    ctx.beginPath();
+    for (const k of [1 / 3, 2 / 3]) {
+      ctx.moveTo(0, h * k); ctx.lineTo(w, h * k);
+      ctx.moveTo(w * k, 0); ctx.lineTo(w * k, h);
+    }
+    ctx.stroke();
     ctx.restore();
   }
 
@@ -2665,16 +2853,18 @@ void main() {
     state.fx.blur !== 'none' || state.fx.half !== 'none' || state.fx.print > 0 || hasText();
 
   /** Everything that goes over the gradient, except grain, which is laid on last. */
-  function finishFx(canvas) {
-    if (!fxActive()) return;
+  function finishFx(canvas, onScreen) {
     const w = canvas.width, h = canvas.height, u = Math.max(w, h) / 1000;
     const ctx = canvas.getContext('2d');
-    const text = hasText();
-    if (text && state.text.under) drawType(ctx, w, h);
-    if (state.fx.blur !== 'none') blurFx(canvas, ctx, w, h, u);
-    if (state.fx.half !== 'none') halftoneFx(canvas, ctx, w, h, u);
-    if (state.fx.print) printFx(ctx, w, h);
-    if (text && !state.text.under) drawType(ctx, w, h);
+    if (fxActive()) {
+      const text = hasText();
+      if (text && state.text.under) drawType(ctx, w, h);
+      if (state.fx.blur !== 'none') blurFx(canvas, ctx, w, h, u);
+      if (state.fx.half !== 'none') halftoneFx(canvas, ctx, w, h, u);
+      if (state.fx.print) printFx(ctx, w, h);
+      if (text && !state.text.under) drawType(ctx, w, h);
+    }
+    if (onScreen && gridOn) drawGuides(ctx, w, h);
   }
 
   /** Draw the effects into the preview. `src` is the canvas holding a field gradient, if any. */
@@ -2695,17 +2885,19 @@ void main() {
     } else {
       paintBase(c, pw, ph);
     }
-    finishFx(c);
+    finishFx(c, true);
   }
 
   /* ---------- effect controls ---------- */
 
   renderLutOptions();
-  for (const key of Object.keys(FONTS)) {
-    const o = document.createElement('option');
-    o.value = key;
-    o.textContent = FONTS[key][0];
-    els.textFont.append(o);
+  for (const [el, table] of [[els.textFont, FONTS], [els.textLayout, LAYOUTS]]) {
+    for (const key of Object.keys(table)) {
+      const o = document.createElement('option');
+      o.value = key;
+      o.textContent = table[key][0];
+      el.append(o);
+    }
   }
 
   // ready-made looks: effect settings, then grain and steps
@@ -2760,7 +2952,6 @@ void main() {
   fxInput(els.halfAngle, 'halfAngle');
   fxInput(els.print, 'print');
 
-  els.text.addEventListener('input', () => { state.text.str = els.text.value.slice(0, 400); render(); });
   els.textFont.addEventListener('change', () => { state.text.font = els.textFont.value; render(); });
   els.textSize.addEventListener('input', () => { state.text.size = +els.textSize.value; render(); });
   els.textSpacing.addEventListener('input', () => { state.text.spacing = +els.textSpacing.value; render(); });
@@ -2792,26 +2983,116 @@ void main() {
     setValue(els.print, f.print);
     els.printOut.textContent = f.print;
 
-    setValue(els.text, t.str);
-    els.textRows.hidden = !hasText();
+    // type: the words belong to the slide on show, the styling to every slide
+    const sl = cur();
+    setValue(els.text, sl.h);
+    setValue(els.textKicker, sl.k);
+    setValue(els.textBody, sl.b);
+    setValue(els.textFooter, sl.f);
+    els.textRows.hidden = !anyText();
+    els.textLayout.value = t.layout;
     els.textFont.value = t.font;
     setValue(els.textSize, t.size);
     setValue(els.textSpacing, t.spacing);
     els.textSizeOut.textContent = fmt(t.size);
     els.textSpacingOut.textContent = t.spacing;
+    els.textSizeRow.hidden = t.layout === 'statement'; // that layout sizes the headline itself
     setValue(els.textColor, t.color);
+    setValue(els.textShade, t.shade);
+    els.textShadeOut.textContent = t.shade;
     els.textBlend.value = t.blend;
     setRadio('text-under', t.under ? '1' : '0');
+    setRadio('type-grid', gridOn ? '1' : '0');
 
-    // the T handle sits just under the text block
-    els.typeHandle.hidden = !hasText();
-    if (hasText()) {
+    // slide buttons
+    const n = state.slides.length;
+    if (els.slides.children.length !== n) {
+      els.slides.textContent = '';
+      for (let i = 0; i < n; i++) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'slide-btn';
+        b.dataset.i = i;
+        b.textContent = i + 1;
+        els.slides.append(b);
+      }
+    }
+    [...els.slides.children].forEach((b, i) => {
+      b.classList.toggle('is-on', i === state.slide);
+      b.setAttribute('aria-label', `Slide ${i + 1} of ${n}`);
+      b.setAttribute('aria-pressed', i === state.slide ? 'true' : 'false');
+    });
+    els.slideAdd.disabled = n >= 10;
+    els.slideDel.disabled = n <= 1;
+    els.dlSlides.hidden = n <= 1;
+
+    // the T handle sits just under the headline, and only the Free layout can be dragged
+    const free = t.layout === 'free' && hasText();
+    els.typeHandle.hidden = !free;
+    if (free) {
       const { w, h } = exportSize();
-      const half = (t.str.split('\n').length * t.size * 1.05) / 2; // in % of the width
+      const half = (Math.max(1, sl.h.split('\n').length) * t.size * 1.04) / 2; // in % of the width
       els.typeHandle.style.left = t.x + '%';
       els.typeHandle.style.top = t.y + (half * w) / h + '%';
     }
   }
+
+  const slideField = (el, key) => el.addEventListener('input', () => {
+    cur()[key] = el.value.slice(0, key === 'b' ? 600 : 200);
+    render();
+  });
+  slideField(els.text, 'h');
+  slideField(els.textKicker, 'k');
+  slideField(els.textBody, 'b');
+  slideField(els.textFooter, 'f');
+  els.textShade.addEventListener('input', () => { state.text.shade = +els.textShade.value; render(); });
+  els.textLayout.addEventListener('change', () => { state.text.layout = els.textLayout.value; render(); });
+  $('#type-grid').addEventListener('change', () => { gridOn = radio('type-grid') === '1'; render(); });
+
+  els.slides.addEventListener('click', (e) => {
+    const b = e.target.closest('.slide-btn');
+    if (!b) return;
+    state.slide = +b.dataset.i;
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    render();
+  });
+  els.slideAdd.addEventListener('click', () => {
+    if (state.slides.length >= 10) return;
+    commit();
+    // a new slide keeps the footer, so a handle or a series name carries through
+    state.slides.splice(state.slide + 1, 0, Object.assign(blankSlide(), { f: cur().f }));
+    state.slide++;
+    render();
+    els.text.focus();
+  });
+  els.slideDel.addEventListener('click', () => {
+    if (state.slides.length <= 1) return;
+    commit();
+    state.slides.splice(state.slide, 1);
+    state.slide = Math.min(state.slide, state.slides.length - 1);
+    render();
+  });
+
+  els.dlSlides.addEventListener('click', async () => {
+    const { w, h } = exportSize();
+    const keep = state.slide, files = [];
+    toast(`Making ${state.slides.length} slides`);
+    await new Promise((r) => setTimeout(r, 30));
+    try {
+      for (let i = 0; i < state.slides.length; i++) {
+        const canvas = document.createElement('canvas');
+        state.slide = i;
+        try { paint(canvas, w, h); } finally { state.slide = keep; }
+        const blob = await new Promise((r) => canvas.toBlob(r, 'image/png'));
+        if (!blob) throw new Error('no image');
+        files.push({ name: `slide-${String(i + 1).padStart(2, '0')}-${w}x${h}.png`, data: new Uint8Array(await blob.arrayBuffer()) });
+      }
+    } catch (err) {
+      return toast('This browser could not make those images');
+    }
+    download(zip(files), 'gradient-carousel.zip');
+    toast('Saved gradient-carousel.zip');
+  });
 
   function typePointer(e) {
     els.typeHandle.focus();
@@ -3105,9 +3386,10 @@ void main() {
   $('#f-stamp').addEventListener('click', () => {
     commit();
     state.text = Object.assign(defaultText(), {
-      str: formulaName().toUpperCase(), font: 'mono', size: 2.5, spacing: 12, y: 94,
+      font: 'mono', size: 2.5, spacing: 12, y: 94,
       color: state.formula.bg === 'light' ? '#1a1a18' : '#fafaf7',
     });
+    cur().h = formulaName().toUpperCase();
     render();
   });
 

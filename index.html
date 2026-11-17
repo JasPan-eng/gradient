@@ -361,14 +361,44 @@
     </section>
 
     <section class="card" id="type-card">
-      <h2>Type</h2>
-      <textarea id="text" rows="2" spellcheck="false" placeholder="Write something" aria-label="Text on the canvas"></textarea>
+      <div class="card-head">
+        <h2>Type</h2>
+        <div class="slide-bar">
+          <div id="slides" class="slides" role="group" aria-label="Carousel slides"></div>
+          <button type="button" class="tool small-tool" id="slide-del" aria-label="Remove this slide" title="Remove this slide">
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12"/></svg>
+          </button>
+          <button type="button" class="tool small-tool" id="slide-add" aria-label="Add a slide" title="Add a slide">
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6v12M6 12h12"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="field">
+        <label for="text-kicker">Kicker <span>a small label above</span></label>
+        <input type="text" id="text-kicker" spellcheck="false" autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="text">Headline <span>the one thing to read</span></label>
+        <textarea id="text" rows="2" spellcheck="false"></textarea>
+      </div>
+      <div class="field">
+        <label for="text-body">Body <span>a sentence or two</span></label>
+        <textarea id="text-body" rows="2" spellcheck="false"></textarea>
+      </div>
+      <div class="field">
+        <label for="text-footer">Footer <span>your handle or the series name</span></label>
+        <input type="text" id="text-footer" spellcheck="false" autocomplete="off">
+      </div>
       <div id="text-rows">
+        <div class="row">
+          <label class="label" for="text-layout">Layout</label>
+          <select id="text-layout"></select>
+        </div>
         <div class="row">
           <label class="label" for="text-font">Font</label>
           <select id="text-font"></select>
         </div>
-        <div class="row">
+        <div class="row" id="text-size-row">
           <label class="label" for="text-size">Size</label>
           <input type="range" id="text-size" min="2" max="40" step="0.5">
           <span class="num"><output id="text-size-out"></output></span>
@@ -391,13 +421,25 @@
           </select>
         </div>
         <div class="row">
+          <label class="label" for="text-shade">Shade</label>
+          <input type="range" id="text-shade" min="0" max="100" step="1">
+          <span class="num"><output id="text-shade-out"></output><i>%</i></span>
+        </div>
+        <div class="row">
           <span class="label">Effects</span>
           <div class="seg" id="text-under">
             <label><input type="radio" name="text-under" value="0"><span>Stay crisp</span></label>
             <label><input type="radio" name="text-under" value="1"><span>Affect type</span></label>
           </div>
         </div>
-        <p class="note">Drag the T on the canvas to move the text.</p>
+        <div class="row">
+          <span class="label">Grid</span>
+          <div class="seg" id="type-grid">
+            <label><input type="radio" name="type-grid" value="0"><span>Hide</span></label>
+            <label><input type="radio" name="type-grid" value="1"><span>Show</span></label>
+          </div>
+        </div>
+        <p class="note">Layouts keep the type inside a 7% margin, wrap it to the column and step the sizes down from headline to body to small text. On a 9:16 story they also stay clear of the app's buttons. Shade darkens the picture behind the words so they stay readable. The grid shows the margins, columns and thirds, and is never in a download. Slides share the look; each has its own words and gets a page number.</p>
       </div>
     </section>
 
@@ -486,6 +528,7 @@
       </div>
       <div class="row dl">
         <button type="button" class="btn ghost" id="dl-social">All social sizes (.zip)</button>
+        <button type="button" class="btn ghost" id="dl-slides" hidden>All slides (.zip)</button>
       </div>
       <p class="note">The zip holds five PNGs: Instagram 4:5, Story 9:16, Square, Threads 3:4 and X 16:9. Each one is laid out again for its own shape, not cropped.</p>
     </section>
