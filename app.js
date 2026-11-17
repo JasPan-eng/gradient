@@ -73,6 +73,7 @@
   const SPACES = ['oklab', 'srgb'];
   const defaultFormula = () => ({
     arr: 'radial', shape: 'circle', eff: 'ripple', count: 16, size: 78, amount: 80, seed: 7, bg: 'dark',
+    style: 'fill', mirror: 'none', drive: 'all',
   });
   const defaultFx = () => ({
     lut: '', lutMix: 100, blur: 'none', blurAmt: 35, blurAngle: 0,
@@ -277,6 +278,7 @@
       const F = state.formula;
       out.formula = {
         arrangement: F_ARRANGE[F.arr][0], shape: F_SHAPE[F.shape][0], effector: F_EFFECT[F.eff][0],
+        style: F_STYLE[F.style][0], mirror: F_MIRROR[F.mirror][0], drives: F_DRIVE[F.drive][0],
         count: F.count, size: F.size, strength: F.amount, seed: F.seed, ground: F.bg,
         focus: { x: state.cx, y: state.cy },
       };
@@ -602,7 +604,7 @@
     if (state.steps > 1) out += `&n=${state.steps}`;
     if (state.type === 'formula') {
       const F = state.formula;
-      out += `&fm=${[F.arr, F.shape, F.eff, F.count, F.size, F.amount, F.seed, F.bg].join(',')}`;
+      out += `&fm=${[F.arr, F.shape, F.eff, F.count, F.size, F.amount, F.seed, F.bg, F.style, F.mirror, F.drive].join(',')}`;
     }
     const f = state.fx, t = state.text;
     if (f.lut) out += `&l=${encodeURIComponent(f.lut)}&lm=${f.lutMix}`;
@@ -702,6 +704,9 @@
       F.amount = clamp(Number.isFinite(+fm[5]) && fm[5] !== undefined ? Math.round(+fm[5]) : F.amount, 0, 100);
       F.seed = clamp(Math.round(+fm[6]) || F.seed, 1, 99);
       if (['dark', 'light', 'gradient'].includes(fm[7])) F.bg = fm[7];
+      if (F_STYLE[fm[8]]) F.style = fm[8];
+      if (F_MIRROR[fm[9]]) F.mirror = fm[9];
+      if (F_DRIVE[fm[10]]) F.drive = fm[10];
       state.formula = F;
     }
 
@@ -1028,7 +1033,30 @@
     ['Forest', 'e9f5a1', '5fa55a', '0b3d2e'], ['Neon', 'f9f047', '0fd850', '0a6a5c'],
     ['Sand', 'f5e6ca', 'd9b382', '8c5a3c'], ['Mono', 'f4f4f1', '8a8a86', '1a1a18'],
   ];
+  // Approximations of the restrained palette of Dieter Rams's Braun and Vitsoe work:
+  // warm whites and greys, near-black, and one small signal color.
+  const RAMS = [
+    ['Rams: warm white to grey', 'f4f1e8', 'd8d4c8', 'a9a69c'],
+    ['Rams: white, grey, black', 'f0ece0', '8a877e', '1c1b19'],
+    ['Rams: aluminium', 'fafaf6', 'c4c6c5', '6f7374'],
+    ['Rams: orange signal', 'f0ece0', 'e8591a', '2b2a28'],
+    ['Rams: green switch', 'eeeade', '3a8f56', '1f2a22'],
+    ['Rams: yellow, orange, red', 'f2b21b', 'e8591a', 'c8312b'],
+    ['Rams: calculator', 'f2b21b', 'd9482b', '6b4a2e', '1c1b19'],
+    ['Rams: beech and white', 'f0ece0', 'c9a877', '6b4a2e'],
+  ];
   const presetsEl = $('#presets');
+  const ramsEl = $('#presets-rams');
+  for (const [name, ...cols] of RAMS) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'preset';
+    b.title = name;
+    b.setAttribute('aria-label', `${name} preset`);
+    b.dataset.colors = cols.join(',');
+    b.style.background = `linear-gradient(135deg, ${cols.map((c) => '#' + c).join(', ')})`;
+    ramsEl.append(b);
+  }
   for (const [name, ...cols] of PRESETS) {
     const b = document.createElement('button');
     b.type = 'button';
@@ -1039,13 +1067,15 @@
     b.style.background = `linear-gradient(135deg, ${cols.map((c) => '#' + c).join(', ')})`;
     presetsEl.append(b);
   }
-  presetsEl.addEventListener('click', (e) => {
+  const usePreset = (e) => {
     const b = e.target.closest('.preset');
     if (!b) return;
     commit();
     setStops(b.dataset.colors.split(',').map((c) => '#' + c));
     render({ forceOrder: true });
-  });
+  };
+  presetsEl.addEventListener('click', usePreset);
+  ramsEl.addEventListener('click', usePreset);
 
   /* focus mode, theme, shortcuts */
   const keysDialog = $('#keys');
@@ -3186,9 +3216,78 @@ void main() {
       for (let i = 0; i < total; i++) out.push([(rnd() * 2 - 1) * rx, (rnd() * 2 - 1) * ry, rnd() * 6.2832, (2 / n) * 1.3]);
       return out;
     }],
+    brick: ['Brick', (n, rx, ry) => {
+      const s = 2 / n, row = s / 2, out = [];
+      const nx = Math.ceil(rx / s) + 1, ny = Math.ceil(ry / row);
+      for (let j = -ny; j <= ny; j++) {
+        const shift = j % 2 ? s / 2 : 0;
+        for (let i = -nx; i <= nx; i++) out.push([i * s + shift, j * row, 0, row]);
+      }
+      return out;
+    }],
+    waves: ['Waves', (n, rx, ry) => {
+      const s = 2 / n, out = [];
+      const nx = Math.ceil(rx / s), ny = Math.ceil(ry / s) + 1;
+      for (let j = -ny; j <= ny; j++) {
+        for (let i = -nx; i <= nx; i++) {
+          const ph = i * s * 3 + j * 0.6;
+          out.push([i * s, j * s + Math.sin(ph) * s * 0.8, Math.cos(ph) * 0.8, s]);
+        }
+      }
+      return out;
+    }],
+    columns: ['Columns', (n, rx, ry) => {
+      const s = 2 / n, step = s * 0.35, out = [];
+      const nx = Math.ceil(rx / s), ny = Math.ceil(ry / step);
+      for (let i = -nx; i <= nx; i++) for (let j = -ny; j <= ny; j++) out.push([i * s, j * step, 0, s * 0.8]);
+      return out;
+    }],
+    rays: ['Rays', (n, rx) => {
+      const spokes = Math.max(6, Math.round(n * 0.8)), out = [];
+      for (let k = 1; k <= n; k++) {
+        const r = (k / n) * rx;
+        for (let j = 0; j < spokes; j++) {
+          const a = (j / spokes) * 6.2832;
+          out.push([r * Math.cos(a), r * Math.sin(a), a + Math.PI / 2, Math.max(0.02, ((6.2832 * r) / spokes) * 0.9)]);
+        }
+      }
+      return out;
+    }],
+    rose: ['Rose', (n) => {
+      const total = n * 14, petals = 3 + (n % 4), out = [];
+      for (let i = 0; i < total; i++) {
+        const t = (i / total) * 6.2832, r = 0.88 * Math.cos(petals * t);
+        out.push([r * Math.cos(t), r * Math.sin(t), t, (2 / n) * 0.8]);
+      }
+      return out;
+    }],
+    knot: ['Knot', (n, rx, ry) => {
+      const total = n * 12, out = [];
+      for (let i = 0; i < total; i++) {
+        const t = (i / total) * 6.2832;
+        out.push([rx * 0.8 * Math.sin(3 * t + Math.PI / 2), ry * 0.8 * Math.sin(2 * t), t * 3, (2 / n) * 0.9]);
+      }
+      return out;
+    }],
+    sphere: ['Sphere', (n) => {
+      // evenly spread points on a ball, seen from the front: far ones are drawn first and smaller
+      const total = n * n, pts = [];
+      for (let i = 0; i < total; i++) {
+        const z = 1 - (2 * (i + 0.5)) / total, rad = Math.sqrt(1 - z * z), a = i * 2.39996;
+        pts.push([rad * Math.cos(a) * 0.84, z * 0.84, rad * Math.sin(a)]);
+      }
+      pts.sort((p, q) => p[2] - q[2]);
+      return pts.map(([x, y, depth]) => [x, y, 0, (3.4 / n) * (0.55 + 0.45 * depth)]);
+    }],
+    cross: ['Cross', (n, rx, ry) => {
+      const s = 2 / n, out = [];
+      for (let i = -Math.ceil(rx / s); i <= Math.ceil(rx / s); i++) out.push([i * s, 0, 0, s]);
+      for (let j = -Math.ceil(ry / s); j <= Math.ceil(ry / s); j++) if (j) out.push([0, j * s, Math.PI / 2, s]);
+      return out;
+    }],
   };
   // these fill the whole picture, so they are built big enough to survive being turned
-  const F_FILLS = ['grid', 'hex', 'radial', 'spiral', 'scatter'];
+  const F_FILLS = ['grid', 'hex', 'radial', 'spiral', 'scatter', 'brick', 'waves', 'columns', 'rays'];
 
   // label, then (context, radius): add the outline to the current path, centered on 0,0
   const F_SHAPE = {
@@ -3208,12 +3307,57 @@ void main() {
       }
       c.closePath();
     }],
+    hexagon: ['Hexagon', (c, r) => polygon(c, r, 6)],
+    pentagon: ['Pentagon', (c, r) => polygon(c, r, 5)],
+    pill: ['Pill', (c, r) => (c.roundRect ? c.roundRect(-r, -r * 0.45, r * 2, r * 0.9, r * 0.45) : c.rect(-r, -r * 0.45, r * 2, r * 0.9))],
+    line: ['Hairline', (c, r) => c.rect(-r, -r * 0.045, r * 2, r * 0.09)],
+    frame: ['Frame', (c, r) => {
+      const k = r * 0.68;
+      c.rect(-r, -r, r * 2, r * 2);
+      c.moveTo(-k, -k); c.lineTo(-k, k); c.lineTo(k, k); c.lineTo(k, -k); c.closePath(); // wound the other way: a hole
+    }],
+    arc: ['Arc', (c, r) => { c.arc(0, 0, r, 0, Math.PI / 2); c.arc(0, 0, r * 0.62, Math.PI / 2, 0, true); c.closePath(); }],
+    leaf: ['Leaf', (c, r) => { c.moveTo(0, -r); c.quadraticCurveTo(r * 0.9, 0, 0, r); c.quadraticCurveTo(-r * 0.9, 0, 0, -r); }],
+    drop: ['Drop', (c, r) => {
+      c.moveTo(0, -r);
+      c.bezierCurveTo(r * 1.1, r * 0.2, r * 0.6, r, 0, r);
+      c.bezierCurveTo(-r * 0.6, r, -r * 1.1, r * 0.2, 0, -r);
+    }],
+    chevron: ['Chevron', (c, r) => {
+      [[-1, 0.6], [0, -0.6], [1, 0.6], [0.55, 0.6], [0, 0.02], [-0.55, 0.6]]
+        .forEach(([x, y], i) => (i ? c.lineTo(x * r, y * r) : c.moveTo(x * r, y * r)));
+      c.closePath();
+    }],
+    ex: ['X', (c, r) => {
+      const k = Math.SQRT1_2;
+      [[-1, -0.3], [-0.3, -0.3], [-0.3, -1], [0.3, -1], [0.3, -0.3], [1, -0.3], [1, 0.3], [0.3, 0.3], [0.3, 1], [-0.3, 1], [-0.3, 0.3], [-1, 0.3]]
+        .forEach(([x, y], i) => {
+          const px = (x - y) * k * r, py = (x + y) * k * r; // a plus, turned 45 degrees
+          if (i) c.lineTo(px, py); else c.moveTo(px, py);
+        });
+      c.closePath();
+    }],
+    flower: ['Flower', (c, r) => {
+      for (let k = 0; k < 5; k++) {
+        const a = (k / 5) * 6.2832 - Math.PI / 2, x = Math.cos(a) * r * 0.52, y = Math.sin(a) * r * 0.52;
+        c.moveTo(x + r * 0.48, y);
+        c.arc(x, y, r * 0.48, 0, 6.2832);
+      }
+    }],
   };
+  function polygon(c, r, sides) {
+    for (let k = 0; k < sides; k++) {
+      const a = (k / sides) * 6.2832 - Math.PI / 2;
+      if (k) c.lineTo(r * Math.cos(a), r * Math.sin(a)); else c.moveTo(r * Math.cos(a), r * Math.sin(a));
+    }
+    c.closePath();
+  }
 
   // label, then (clone) -> a value from 0 to 1. The value picks the clone's color from the
   // gradient, and with Strength it also shrinks and turns the clone.
-  // clone: x, y (position), d (distance from the focus), t (order, 0 to 1), r (its own random
-  // number), cell, seed, noise(x, y)
+  // clone: x, y (position), d and a (distance and direction from the focus), fx, fy (the focus),
+  // ax, ay (half the picture's width and height), t (order, 0 to 1), r (its own random number),
+  // cell, seed, noise(x, y)
   const F_EFFECT = {
     plain: ['Plain', (q) => q.t],
     random: ['Random', (q) => q.r],
@@ -3223,6 +3367,21 @@ void main() {
     noise: ['Noise', (q) => q.noise(q.x * 1.5, q.y * 1.5)],
     twist: ['Twist', (q) => clamp(q.d / 1.4, 0, 1)],
     checker: ['Checker', (q) => (Math.abs(Math.round(q.x / q.cell) + Math.round(q.y / q.cell)) % 2 ? 0.92 : 0.12)],
+    ramp: ['Ramp', (q) => clamp((q.x / q.ax + 1) / 2, 0, 1)],
+    bands: ['Bands', (q) => (Math.floor(((q.y / q.ay + 1) / 2) * 7) % 2 ? 0.9 : 0.15)],
+    steps: ['Steps', (q) => 1 - Math.floor(clamp(q.d / 1.4, 0, 0.999) * 5) / 4],
+    vortex: ['Vortex', (q) => 0.5 + 0.5 * Math.sin(q.a * 3 + q.d * 5)],
+    pulse: ['Pulse', (q) => Math.exp(-((q.d - 0.6) ** 2) / 0.03)],
+    interference: ['Interference', (q) => 0.5 + 0.25 * (Math.cos(q.d * 10) + Math.cos(Math.hypot(q.x + q.fx + 0.5, q.y + q.fy) * 10))],
+    edge: ['Edge', (q) => clamp(Math.min(q.ax - Math.abs(q.x), q.ay - Math.abs(q.y)) / 0.6, 0, 1)],
+    flip: ['Coin flip', (q) => (q.r > 0.5 ? 0.95 : 0.1)],
+  };
+
+  // three more variables: how a clone is inked, how the picture repeats, and what the effector drives
+  const F_STYLE = { fill: ['Solid'], outline: ['Outline'], both: ['Solid and outline'] };
+  const F_MIRROR = { none: ['None'], mirror: ['Mirror'], quad: ['Four-way'], kaleido: ['Kaleidoscope'] };
+  const F_DRIVE = {
+    all: ['Size and turn'], size: ['Size'], turn: ['Turn'], push: ['Position'], color: ['Color only'],
   };
 
   const mulberry = (seed) => () => {
@@ -3272,12 +3431,22 @@ void main() {
     const effect = F_EFFECT[F.eff][1], shape = F_SHAPE[F.shape][1];
     const amount = F.eff === 'plain' ? 0 : F.amount / 100;
     const total = clones.length;
+    const sizes = F.drive === 'all' || F.drive === 'size', turns = F.drive === 'all' || F.drive === 'turn';
 
     clones.forEach(([x0, y0, a, cell], i) => {
       let x = x0 * co - y0 * si, y = x0 * si + y0 * co;
       const d = Math.hypot(x - fx, y - fy);
-      const v = clamp(effect({ x, y, d, t: total > 1 ? i / (total - 1) : 0, r: rnd(), cell, seed: F.seed, noise }), 0, 1);
-      let spin = amount * v * Math.PI;
+      const v = clamp(effect({
+        x, y, d, a: Math.atan2(y - fy, x - fx), fx, fy, ax, ay,
+        t: total > 1 ? i / (total - 1) : 0, r: rnd(), cell, seed: F.seed, noise,
+      }), 0, 1);
+      let spin = turns ? amount * v * Math.PI : 0;
+      if (F.drive === 'push' && d > 1e-6) {
+        // slide the clone toward or away from the focus
+        const k = (amount * (v - 0.5) * cell * 1.6) / d;
+        x += (x - fx) * k;
+        y += (y - fy) * k;
+      }
       if (F.eff === 'twist') {
         // swing each clone around the focus, more the closer it is
         const sw = amount * (1 - v) * 2.6, c2 = Math.cos(sw), s2 = Math.sin(sw);
@@ -3286,17 +3455,60 @@ void main() {
         y = fy + dx * s2 + dy * c2;
         spin = sw;
       }
-      const r = cell * m * 0.5 * (F.size / 100) * (1 - amount * (1 - v) * (F.eff === 'twist' ? 0.4 : 1));
+      const shrink = sizes ? amount * (1 - v) * (F.eff === 'twist' ? 0.4 : 1) : 0;
+      const r = cell * m * 0.5 * (F.size / 100) * (1 - shrink);
       const px = w / 2 + x * m, py = h / 2 + y * m;
       if (r < 0.3 || px < -r || py < -r || px > w + r || py > h + r) return;
       const th = a + turn + spin, c1 = Math.cos(th), s1 = Math.sin(th);
       ctx.setTransform(c1, s1, -s1, c1, px, py);
       ctx.beginPath();
       shape(ctx, r);
-      ctx.fillStyle = color(v);
-      ctx.fill();
+      if (F.style === 'outline' || (F.style === 'both' && i % 2)) {
+        ctx.strokeStyle = color(v);
+        ctx.lineWidth = Math.max(1, r * 0.12);
+        ctx.lineJoin = 'round';
+        ctx.stroke();
+      } else {
+        ctx.fillStyle = color(v);
+        ctx.fill();
+      }
     });
     ctx.setTransform(1, 0, 0, 1, 0, 0);
+    if (F.mirror !== 'none') mirrorFormula(canvas, ctx, w, h);
+  }
+
+  /** Repeat one part of the picture over the rest. */
+  function mirrorFormula(canvas, ctx, w, h) {
+    const src = padded(canvas, 0);
+    const F = state.formula;
+    ctx.save();
+    if (F.mirror === 'kaleido') {
+      // twelve slices around the middle, every other one flipped, all showing the same slice
+      const seg = Math.PI / 6, reach = Math.hypot(w, h);
+      for (let k = 0; k < 12; k++) {
+        ctx.setTransform(1, 0, 0, 1, w / 2, h / 2);
+        ctx.rotate((k % 2 ? k + 1 : k) * seg);
+        if (k % 2) ctx.scale(1, -1);
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.arc(0, 0, reach, -0.004, seg + 0.004);
+        ctx.closePath();
+        ctx.save();
+        ctx.clip();
+        ctx.drawImage(src, -w / 2, -h / 2);
+        ctx.restore();
+      }
+    } else {
+      const hw = Math.ceil(w / 2), hh = Math.ceil(h / 2);
+      ctx.setTransform(-1, 0, 0, 1, w, 0);
+      ctx.drawImage(src, 0, 0, hw, h, 0, 0, hw, h); // the left half, flipped onto the right
+      if (F.mirror === 'quad') {
+        const top = padded(canvas, 0);
+        ctx.setTransform(1, 0, 0, -1, 0, h);
+        ctx.drawImage(top, 0, 0, w, hh, 0, 0, w, hh); // then the top half onto the bottom
+      }
+    }
+    ctx.restore();
   }
 
   /* ---------- formula controls ---------- */
@@ -3305,9 +3517,11 @@ void main() {
     card: $('#formula-card'), name: $('#f-name'), arr: $('#f-arr'), shape: $('#f-shape'), eff: $('#f-eff'),
     count: $('#f-count'), size: $('#f-size'), amount: $('#f-amount'), seed: $('#f-seed'),
     countOut: $('#f-count-out'), sizeOut: $('#f-size-out'), amountOut: $('#f-amount-out'), seedOut: $('#f-seed-out'),
-    amountRow: $('#f-amount-row'),
+    amountRow: $('#f-amount-row'), style: $('#f-style'), mirror: $('#f-mirror'), drive: $('#f-drive'),
+    driveRow: $('#f-drive-row'), total: $('#f-total'),
   };
-  for (const [el, table] of [[fEls.arr, F_ARRANGE], [fEls.shape, F_SHAPE], [fEls.eff, F_EFFECT]]) {
+  const F_TABLES = { arr: F_ARRANGE, shape: F_SHAPE, eff: F_EFFECT, style: F_STYLE, mirror: F_MIRROR, drive: F_DRIVE };
+  for (const [el, table] of Object.keys(F_TABLES).map((key) => [fEls[key], F_TABLES[key]])) {
     for (const key of Object.keys(table)) {
       const o = document.createElement('option');
       o.value = key;
@@ -3315,6 +3529,8 @@ void main() {
       el.append(o);
     }
   }
+  fEls.total.textContent =
+    `${Object.keys(F_TABLES).reduce((n, key) => n * Object.keys(F_TABLES[key]).length, 1).toLocaleString('en-US')} combinations, before the sliders.`;
   const formulaName = () => {
     const F = state.formula;
     return `${F_ARRANGE[F.arr][0]} × ${F_SHAPE[F.shape][0]} × ${F_EFFECT[F.eff][0]}`;
@@ -3327,6 +3543,10 @@ void main() {
     fEls.arr.value = F.arr;
     fEls.shape.value = F.shape;
     fEls.eff.value = F.eff;
+    fEls.style.value = F.style;
+    fEls.mirror.value = F.mirror;
+    fEls.drive.value = F.drive;
+    fEls.driveRow.hidden = F.eff === 'plain';
     setValue(fEls.count, F.count);
     setValue(fEls.size, F.size);
     setValue(fEls.amount, F.amount);
@@ -3339,7 +3559,7 @@ void main() {
     setRadio('f-bg', F.bg);
   }
 
-  for (const key of ['arr', 'shape', 'eff']) {
+  for (const key of Object.keys(F_TABLES)) {
     fEls[key].addEventListener('change', () => { state.formula[key] = fEls[key].value; render(); });
   }
   for (const key of ['count', 'size', 'amount', 'seed']) {
@@ -3354,6 +3574,9 @@ void main() {
     F.arr = pick(F_ARRANGE);
     F.shape = pick(F_SHAPE);
     F.eff = pick(F_EFFECT);
+    F.style = rnd() < 0.6 ? 'fill' : pick(F_STYLE);
+    F.mirror = rnd() < 0.55 ? 'none' : pick(F_MIRROR);
+    F.drive = rnd() < 0.5 ? 'all' : pick(F_DRIVE);
     F.count = 6 + Math.floor(rnd() * 22);
     F.size = 55 + Math.floor(rnd() * 80);
     F.amount = 50 + Math.floor(rnd() * 50);
@@ -3370,7 +3593,8 @@ void main() {
     const rnd = mulberry(now.getFullYear() * 10000 + (now.getMonth() + 1) * 100 + now.getDate());
     commit();
     rollFormula(rnd);
-    const [, ...cols] = PRESETS[Math.floor(rnd() * PRESETS.length)];
+    const pool = PRESETS.concat(RAMS);
+    const [, ...cols] = pool[Math.floor(rnd() * pool.length)];
     setStops(cols.map((c) => '#' + c));
     state.angle = Math.floor(rnd() * 8) * 45;
     state.cx = state.cy = 50;
@@ -3380,7 +3604,9 @@ void main() {
   $('#f-copy').addEventListener('click', () => {
     const F = state.formula;
     copy(
-      `${formulaName()}\ncount ${F.count} · size ${F.size}% · strength ${F.amount}% · seed ${F.seed}`,
+      `${formulaName()}\n` +
+      `${F_STYLE[F.style][0]} · mirror: ${F_MIRROR[F.mirror][0]} · drives: ${F_DRIVE[F.drive][0]}\n` +
+      `count ${F.count} · size ${F.size}% · strength ${F.amount}% · seed ${F.seed}`,
       'Formula copied');
   });
   $('#f-stamp').addEventListener('click', () => {

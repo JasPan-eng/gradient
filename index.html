@@ -164,6 +164,18 @@
         <select id="f-eff"></select>
       </div>
       <div class="row">
+        <label class="label" for="f-style">4 Ink</label>
+        <select id="f-style"></select>
+      </div>
+      <div class="row">
+        <label class="label" for="f-mirror">5 Mirror</label>
+        <select id="f-mirror"></select>
+      </div>
+      <div class="row" id="f-drive-row">
+        <label class="label" for="f-drive">6 Drives</label>
+        <select id="f-drive"></select>
+      </div>
+      <div class="row">
         <label class="label" for="f-count">Count</label>
         <input type="range" id="f-count" min="3" max="40" step="1">
         <span class="num"><output id="f-count-out"></output></span>
@@ -195,7 +207,7 @@
         <button type="button" class="btn ghost small" id="f-copy">Copy formula</button>
         <button type="button" class="btn ghost small" id="f-stamp">Stamp it on the canvas</button>
       </div>
-      <p class="note">Three choices make one composition, the way a cloner, its object and an effector do. Turn rotates the layout, and dragging the canvas moves the effector's focus. Colors come from the stops. Today's gives the same formula all day.</p>
+      <p class="note"><span id="f-total"></span> The first three choices make the composition, the way a cloner, its object and an effector do; Ink, Mirror and Drives change how it is drawn, repeated and what the effector moves. Turn rotates the layout, and dragging the canvas moves the effector's focus. Colors come from the stops. Today's gives the same formula all day.</p>
     </section>
 
     <section class="card" id="hot-card" hidden>
@@ -275,6 +287,8 @@
       <div id="stops" class="stops"></div>
       <h3>Presets</h3>
       <div id="presets" class="presets"></div>
+      <h3>Dieter Rams</h3>
+      <div id="presets-rams" class="presets"></div>
       <div class="sub-head">
         <h3>Saved</h3>
         <button type="button" class="btn ghost small" id="save">Save this one</button>
