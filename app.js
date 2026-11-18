@@ -2125,9 +2125,26 @@ void main() {
       pivot.style.left = state.cx + '%';
       pivot.style.top = state.cy + '%';
     }
+    // A straight line can run past the canvas (a diagonal on a non-square canvas puts
+    // its ends beyond the corners), so dots that would fall outside are held just
+    // inside the edge, where they can still be seen and grabbed.
+    let lo = 0, hi = 1;
+    if (state.type !== 'conic') {
+      const ix = (12 / Math.max(1, els.preview.clientWidth)) * 100;
+      const iy = (12 / Math.max(1, els.preview.clientHeight)) * 100;
+      const clip = (p, d, min, max) => {
+        if (Math.abs(d) < 1e-9) return;
+        const a = (min - p) / d, b = (max - p) / d;
+        lo = Math.max(lo, Math.min(a, b));
+        hi = Math.min(hi, Math.max(a, b));
+      };
+      clip(line[0], line[2] - line[0], ix, 100 - ix);
+      clip(line[1], line[3] - line[1], iy, 100 - iy);
+      if (lo > hi) { lo = 0; hi = 1; }
+    }
     for (const s of state.stops) {
       const el = guideDot(s.id);
-      const [x, y] = at(s.pos / 100);
+      const [x, y] = at(clamp(s.pos / 100, lo, hi));
       el.style.left = x + '%';
       el.style.top = y + '%';
       el.style.setProperty('--c', s.color);
